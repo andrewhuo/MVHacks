@@ -25,6 +25,7 @@ import pygame
 WINDOW_WIDTH = 1080
 WINDOW_HEIGHT = 620
 SIDEBAR_WIDTH = 290
+PIXELATE_SCALE = 2
 VIEWPORT_RECT = pygame.Rect(SIDEBAR_WIDTH, 0, WINDOW_WIDTH - SIDEBAR_WIDTH, WINDOW_HEIGHT)
 
 # World settings
@@ -49,7 +50,9 @@ OCEAN_TILE_PATH = ASSETS_DIR / "ocean.jpeg"
 OCEAN_TILE_SCALE = 0.4
 BOAT_SPRITE_PATH = ASSETS_DIR / "smallboat.png"
 BOAT_SPRITE_SCALE = 1.0
-BOAT_SPRITE_ANGLE_OFFSET = 0.0  # adjust if sprite's default facing is not rightward
+BOAT_SPRITE_ANGLE_OFFSET = 90.0  # sprite defaults to facing up; offset aligns it to movement
+MOTHERSHIP_SPRITE_PATH = ASSETS_DIR / "mothership.png"
+MOTHERSHIP_SPRITE_SCALE = 0.45
 
 # Colors
 BOAT_FILL = (245, 192, 50)
@@ -57,19 +60,18 @@ BOAT_OUTLINE = (74, 54, 22)
 BASE_FILL = (62, 79, 110)
 BASE_DECK = (95, 120, 156)
 BASE_OUTLINE = (23, 35, 52)
-TEXT_COLOR = (238, 247, 255)
-MUTED_TEXT = (192, 212, 233)
-SIDEBAR_BG = (16, 27, 41)
-SIDEBAR_BORDER = (38, 58, 82)
-FUEL_BG = (42, 55, 75)
+TEXT_COLOR = (248, 236, 210)
+MUTED_TEXT = (230, 212, 182)
+SIDEBAR_BG = (168, 128, 82)
+SIDEBAR_BORDER = (124, 91, 56)
+FUEL_BG = (132, 101, 67)
 FUEL_FILL = (102, 221, 132)
 FUEL_LOW = (241, 118, 104)
 FALLBACK_OCEAN_TOP = (25, 110, 184)
 FALLBACK_OCEAN_BOTTOM = (16, 69, 132)
-TRASH_SPRITE_PATTERNS = ("bottle*.png", "bag*.png")
-TRASH_SPRITE_SCALE = 0.6
+TRASH_DIR = ASSETS_DIR / "trash"
+TRASH_SPRITE_SCALE = 0.09
 FALLBACK_TRASH_COLOR = (210, 228, 236)
-
 STATE_COLLECTING = "collecting"
 STATE_RETURNING = "returning"
 STATE_REFUELING = "refueling"
@@ -118,25 +120,36 @@ def load_boat_sprite() -> pygame.Surface | None:
         return None
 
 
+    sprites: list[pygame.Surface] = []
+def load_mothership_sprite() -> pygame.Surface | None:
+    if not MOTHERSHIP_SPRITE_PATH.exists():
+        return None
+    try:
+        sprite = pygame.image.load(str(MOTHERSHIP_SPRITE_PATH)).convert_alpha()
+        scaled_w = max(48, int(sprite.get_width() * MOTHERSHIP_SPRITE_SCALE))
+        scaled_h = max(32, int(sprite.get_height() * MOTHERSHIP_SPRITE_SCALE))
+        return pygame.transform.scale(sprite, (scaled_w, scaled_h))
+    except pygame.error:
+        return None
+
 def load_trash_sprites() -> list[pygame.Surface]:
     sprites: list[pygame.Surface] = []
-    for pattern in TRASH_SPRITE_PATTERNS:
-        for path in sorted(ASSETS_DIR.glob(pattern)):
-            try:
-                sprite = pygame.image.load(str(path)).convert_alpha()
-                scaled_w = max(6, int(sprite.get_width() * TRASH_SPRITE_SCALE))
-                scaled_h = max(6, int(sprite.get_height() * TRASH_SPRITE_SCALE))
-                sprites.append(pygame.transform.scale(sprite, (scaled_w, scaled_h)))
-            except pygame.error:
-                continue
+    if not TRASH_DIR.exists():
+        return sprites
+    for path in sorted(TRASH_DIR.glob("*.png")):
+        try:
+            sprite = pygame.image.load(str(path)).convert_alpha()
+            scaled_w = max(3, int(sprite.get_width() * TRASH_SPRITE_SCALE))
+            scaled_h = max(3, int(sprite.get_height() * TRASH_SPRITE_SCALE))
+            sprites.append(pygame.transform.scale(sprite, (scaled_w, scaled_h)))
+        except pygame.error:
+            continue
     return sprites
 
 
 def quantize_angle_to_8(angle_degrees: float) -> float:
     """Quantize angle to 8 directions (every 45 degrees)."""
     return round(angle_degrees / 45.0) * 45.0
-
-
 def draw_fallback_ocean_gradient(surface: pygame.Surface) -> None:
     height = surface.get_height()
     width = surface.get_width()
@@ -152,7 +165,7 @@ def draw_fallback_ocean_gradient(surface: pygame.Surface) -> None:
 
 class TrashItem:
     def __init__(self, sprite: pygame.Surface | None) -> None:
-        self.sprite = pygame.transform.rotate(sprite, random.uniform(0.0, 360.0)) if sprite is not None else None
+        self.sprite = pygame.transform.rotate(sprite, random.choice([0, 45, 90, 135, 180, 225, 270, 315])) if sprite is not None else None
         if self.sprite is not None:
             self.width = self.sprite.get_width()
             self.height = self.sprite.get_height()
@@ -183,8 +196,6 @@ class TrashItem:
     def collides_with_boat(self, boat_rect: pygame.Rect) -> bool:
         item_rect = pygame.Rect(self.x - self.width // 2, self.y - self.height // 2, self.width, self.height)
         return boat_rect.colliderect(item_rect)
-
-
 class WakeParticle:
     def __init__(self, x: float, y: float, vx: float, vy: float, lifetime: float) -> None:
         self.x = x
@@ -232,16 +243,27 @@ def draw_tiled_ocean(surface: pygame.Surface, tile: pygame.Surface, camera_x: fl
         x += tile_w
 
 
-def draw_base_ship(surface: pygame.Surface, base_font: pygame.font.Font, camera_x: float, camera_y: float) -> None:
+def draw_base_ship(
+    surface: pygame.Surface,
+    base_font: pygame.font.Font,
+    camera_x: float,
+    camera_y: float,
+    mothership_sprite: pygame.Surface | None,
+) -> None:
     base_screen = world_rect_to_screen(BASE_RECT, camera_x, camera_y)
+
+    if mothership_sprite is not None:
+        sprite_rect = mothership_sprite.get_rect(center=base_screen.center)
+        surface.blit(mothership_sprite, sprite_rect)
+        return
+
     pygame.draw.rect(surface, BASE_FILL, base_screen, border_radius=10)
     pygame.draw.rect(surface, BASE_OUTLINE, base_screen, width=3, border_radius=10)
     deck = base_screen.inflate(-34, -44)
     pygame.draw.rect(surface, BASE_DECK, deck, border_radius=8)
     pygame.draw.rect(surface, BASE_OUTLINE, deck, width=2, border_radius=8)
-    label = base_font.render("BASE SHIP", True, TEXT_COLOR)
+    label = base_font.render("MOTHERSHIP", True, TEXT_COLOR)
     surface.blit(label, (base_screen.x + 18, base_screen.y + 10))
-
 
 def draw_boat(
     surface: pygame.Surface,
@@ -271,6 +293,17 @@ def draw_boat(
     surface.blit(rotated, rot_rect)
 
 
+def apply_pixelation(surface: pygame.Surface) -> None:
+    if PIXELATE_SCALE <= 1:
+        return
+    w, h = surface.get_size()
+    low_w = max(1, w // PIXELATE_SCALE)
+    low_h = max(1, h // PIXELATE_SCALE)
+    low = pygame.transform.scale(surface, (low_w, low_h))
+    pix = pygame.transform.scale(low, (w, h))
+    surface.blit(pix, (0, 0))
+
+
 def draw_sidebar(
     surface: pygame.Surface,
     body_font: pygame.font.Font,
@@ -280,10 +313,49 @@ def draw_sidebar(
     boat_state: str,
     fuel_seconds: float,
     refuel_seconds_left: float,
-) -> None:
+    money: float,
+    fame: float,
+    crew_count: int,
+    morale: float,
+    ships_total: int,
+    trash_stored: int,
+    operating_cost_per_min: float,
+    collection_rate: float,
+    event_log: list[str],
+    menu_scroll: float,
+) -> float:
     panel = pygame.Rect(0, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT)
-    pygame.draw.rect(surface, SIDEBAR_BG, panel)
-    pygame.draw.line(surface, SIDEBAR_BORDER, (SIDEBAR_WIDTH - 1, 0), (SIDEBAR_WIDTH - 1, WINDOW_HEIGHT), 2)
+
+    # Plain warm wood panel + subtle vertical tonal accents
+    base = (170, 130, 84)
+    tone_light = (182, 142, 94)
+    tone_dark = (156, 118, 75)
+    pygame.draw.rect(surface, base, panel)
+
+    x = 10
+    i = 0
+    while x < SIDEBAR_WIDTH - 8:
+        w = 2 if i % 3 else 3
+        y0 = 10 + (i * 11) % 34
+        h = WINDOW_HEIGHT - y0 - (14 + (i * 7) % 40)
+        c = tone_light if i % 2 == 0 else tone_dark
+        pygame.draw.rect(surface, c, (x, y0, w, max(40, h)))
+        x += 12
+        i += 1
+
+    pygame.draw.rect(surface, (186, 149, 102), panel, width=2)
+    inner = panel.inflate(-6, -6)
+    pygame.draw.rect(surface, SIDEBAR_BORDER, inner, width=2)
+
+    # Scrollable content area
+    content_x = 12
+    content_y = 12
+    content_w = SIDEBAR_WIDTH - 24
+    visible_h = WINDOW_HEIGHT - 24
+    content = pygame.Surface((content_w, 980), pygame.SRCALPHA)
+
+    card_colors = [(149, 111, 70), (141, 104, 64), (156, 118, 76), (137, 100, 61)]
+    border = (103, 75, 45)
 
     if boat_state == STATE_COLLECTING:
         status = "Collecting"
@@ -292,31 +364,68 @@ def draw_sidebar(
     else:
         status = f"Refueling ({max(0.0, refuel_seconds_left):.1f}s)"
 
-    lines = [
-        f"Boat AI: {status}",
-        f"Trash Collected: {collected}",
-        f"Trash Remaining: {remaining}",
+    def draw_card(y: int, title: str, lines: list[str], idx: int) -> int:
+        h = 36 + len(lines) * 20
+        rect = pygame.Rect(0, y, content_w, h)
+        pygame.draw.rect(content, card_colors[idx % len(card_colors)], rect)
+        pygame.draw.rect(content, border, rect, width=2)
+
+        title_surf = body_font.render(title, True, TEXT_COLOR)
+        content.blit(title_surf, (10, y + 8))
+
+        ly = y + 30
+        for line in lines:
+            surf = body_font.render(line, True, MUTED_TEXT)
+            content.blit(surf, (12, ly))
+            ly += 20
+        return y + h + 10
+
+    y = 0
+    y = draw_card(y, "Overview", [
+        f"Money: ${int(money)}",
+        f"Fame: {fame:.1f}",
         f"Score: {score}",
-        "Camera: drag on map",
-        "ESC: quit",
-    ]
+        f"Net Cost/min: ${operating_cost_per_min:.1f}",
+    ], 0)
 
-    y = 18
-    for i, line in enumerate(lines):
-        color = TEXT_COLOR if i < 4 else MUTED_TEXT
-        label = body_font.render(line, True, color)
-        surface.blit(label, (14, y))
-        y += 26
+    y = draw_card(y, "Cleanup", [
+        f"Trash Collected: {collected}",
+        f"Trash Stored: {trash_stored}",
+        f"Trash Remaining: {remaining}",
+        f"Rate/min: {collection_rate:.1f}",
+    ], 1)
 
-    bar_outer = pygame.Rect(16, 190, SIDEBAR_WIDTH - 32, 16)
-    pygame.draw.rect(surface, FUEL_BG, bar_outer, border_radius=7)
-    fuel_ratio = max(0.0, min(1.0, fuel_seconds / MAX_FUEL_SECONDS))
-    fill_width = max(0, int((bar_outer.width - 2) * fuel_ratio))
-    bar_inner = pygame.Rect(bar_outer.x + 1, bar_outer.y + 1, fill_width, bar_outer.height - 2)
-    fuel_color = FUEL_FILL if fuel_ratio > 0.25 else FUEL_LOW
-    if bar_inner.width > 0:
-        pygame.draw.rect(surface, fuel_color, bar_inner, border_radius=6)
+    y = draw_card(y, "Fleet", [
+        f"Ships: {ships_total}",
+        f"Status: {status}",
+        f"Fuel: {max(0.0, fuel_seconds):.1f}s",
+        "Use mouse drag on map to pan",
+    ], 2)
 
+    y = draw_card(y, "Crew", [
+        f"Crew Count: {crew_count}",
+        f"Morale: {morale:.1f}%",
+        "Morale impacts efficiency (next)",
+    ], 3)
+
+    logs = event_log[:6] if event_log else ["No events yet"]
+    y = draw_card(y, "Log", logs, 0)
+
+    max_scroll = max(0, y - visible_h)
+    clamped_scroll = max(0, min(int(menu_scroll), max_scroll))
+
+    src = pygame.Rect(0, clamped_scroll, content_w, visible_h)
+    surface.blit(content, (content_x, content_y), src)
+
+    if max_scroll > 0:
+        track = pygame.Rect(SIDEBAR_WIDTH - 7, content_y, 4, visible_h)
+        pygame.draw.rect(surface, (120, 88, 54), track)
+        thumb_h = max(22, int(visible_h * (visible_h / max(y, visible_h + 1))))
+        thumb_y = content_y + int((visible_h - thumb_h) * (clamped_scroll / max(1, max_scroll)))
+        thumb = pygame.Rect(track.x, thumb_y, track.width, thumb_h)
+        pygame.draw.rect(surface, (198, 161, 114), thumb)
+
+    return float(max_scroll)
 
 def collect_on_contact(boat_rect: pygame.Rect, trash_items: list[TrashItem]) -> tuple[int, int]:
     kept_items: list[TrashItem] = []
@@ -417,6 +526,7 @@ async def run_game() -> None:
 
     ocean_tile = load_ocean_tile()
     boat_sprite = load_boat_sprite()
+    mothership_sprite = load_mothership_sprite()
     trash_sprites = load_trash_sprites()
 
     boat_rect = pygame.Rect(BASE_RECT.centerx + 20, BASE_RECT.centery + 6, BOAT_SIZE[0], BOAT_SIZE[1])
@@ -429,16 +539,39 @@ async def run_game() -> None:
     fuel_seconds = MAX_FUEL_SECONDS
     refuel_seconds_left = 0.0
 
-    facing_angle = 0.0
+    # V1.9 management stats
+    money = 1200.0
+    fame = 8.0
+    crew_count = 14
+    morale = 74.0
+    ships_total = 1
+    trash_stored = 0
+    operating_cost_per_min = 42.0
+    collection_rate = 0.0
+    elapsed_seconds = 0.0
+    event_log: list[str] = ["[00:00] Operations online"]
 
+    facing_angle = 0.0
     camera_x = 0.0
     camera_y = 0.0
     dragging = False
     last_mouse = (0, 0)
-    running = True
 
+    menu_scroll = 0.0
+    menu_max_scroll = 0.0
+
+    def add_log(msg: str) -> None:
+        nonlocal event_log, elapsed_seconds
+        mm = int(elapsed_seconds // 60)
+        ss = int(elapsed_seconds % 60)
+        event_log.insert(0, f"[{mm:02d}:{ss:02d}] {msg}")
+        if len(event_log) > 12:
+            event_log = event_log[:12]
+
+    running = True
     while running:
         dt = clock.tick(FPS) / 1000.0
+        elapsed_seconds += dt
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -457,29 +590,53 @@ async def run_game() -> None:
                 camera_y -= dy
                 camera_x, camera_y = clamp_camera(camera_x, camera_y)
                 last_mouse = event.pos
+            elif event.type == pygame.MOUSEWHEEL:
+                mx, _ = pygame.mouse.get_pos()
+                if mx < SIDEBAR_WIDTH:
+                    menu_scroll -= event.y * 26
+                    menu_scroll = max(0.0, min(menu_scroll, menu_max_scroll))
 
         move_dx = 0.0
         move_dy = 0.0
+        newly_collected = 0
+        gained_score = 0
 
         if boat_state == STATE_COLLECTING:
             move_dx, move_dy = move_boat_to_nearest_trash(boat_rect, trash_items, dt)
             fuel_seconds = max(0.0, fuel_seconds - dt)
             if fuel_seconds <= 0.0:
                 boat_state = STATE_RETURNING
+                add_log("Boat low fuel, returning to mothership")
+
             newly_collected, gained_score = collect_on_contact(boat_rect, trash_items)
-            trash_collected += newly_collected
-            score += gained_score
+            if newly_collected > 0:
+                trash_collected += newly_collected
+                trash_stored += newly_collected
+                score += gained_score
+                money += gained_score * 0.8
+                fame = min(100.0, fame + newly_collected * 0.06)
+                if trash_collected % 10 == 0:
+                    add_log(f"Collected {trash_collected} total trash")
+
         elif boat_state == STATE_RETURNING:
             at_base, move_dx, move_dy = move_boat_toward_point(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt)
             if at_base:
                 boat_state = STATE_REFUELING
                 refuel_seconds_left = REFUEL_SECONDS
+                add_log("Docked at mothership, refueling")
+
         else:
             refuel_seconds_left -= dt
             if refuel_seconds_left <= 0.0:
                 fuel_seconds = MAX_FUEL_SECONDS
                 refuel_seconds_left = 0.0
                 boat_state = STATE_COLLECTING
+                add_log("Refuel complete, redeploying")
+
+        # economy + derived stats
+        money -= (operating_cost_per_min / 60.0) * dt
+        collection_rate = (trash_collected / max(1.0, elapsed_seconds)) * 60.0
+        morale = max(40.0, min(96.0, 68.0 + fame * 0.25 - (8.0 if boat_state == STATE_RETURNING else 0.0)))
 
         if abs(move_dx) > 1e-4 or abs(move_dy) > 1e-4:
             facing_angle = math.degrees(math.atan2(move_dy, move_dx))
@@ -499,10 +656,10 @@ async def run_game() -> None:
         for p in wake_particles:
             p.draw(screen, camera_x, camera_y)
 
-        draw_base_ship(screen, base_font, camera_x, camera_y)
+        draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite)
         draw_boat(screen, boat_rect, camera_x, camera_y, boat_sprite, facing_angle)
 
-        draw_sidebar(
+        menu_max_scroll = draw_sidebar(
             screen,
             body_font,
             trash_collected,
@@ -511,13 +668,24 @@ async def run_game() -> None:
             boat_state,
             fuel_seconds,
             refuel_seconds_left,
+            money,
+            fame,
+            crew_count,
+            morale,
+            ships_total,
+            trash_stored,
+            operating_cost_per_min,
+            collection_rate,
+            event_log,
+            menu_scroll,
         )
+        menu_scroll = max(0.0, min(menu_scroll, menu_max_scroll))
 
+        apply_pixelation(screen)
         pygame.display.flip()
         await asyncio.sleep(0)
 
     pygame.quit()
-
 
 async def main() -> None:
     await run_game()
