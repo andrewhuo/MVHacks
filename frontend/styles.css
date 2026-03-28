@@ -1,0 +1,118 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
+
+/* Modern Sea-themed CSS for Mission Clean Oceans */
+
+:root {
+    --ocean-light: #87CEEB;
+    --ocean-deep: #1e3a8a;
+    --accent-gold: #fbbf24;
+    --accent-sand: #fef3c7;
+    --text-white: #ffffff;
+    --shadow-dark: rgba(0, 0, 0, 0.3);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Roboto', sans-serif;
+    background: linear-gradient(135deg, var(--ocean-light) 0%, var(--ocean-deep) 100%);
+    color: var(--text-white);
+    margin: 0;
+    padding: 2rem;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    text-align: center;
+    overflow-x: hidden;
+    gap: 2rem;
+}
+
+.header {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border-radius: 20px;
+    padding: 2rem;
+    box-shadow: 0 8px 32px var(--shadow-dark);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    max-width: 1200px;
+    width: 100%;
+    animation: fadeInUp 1s ease-out;
+    position: relative;
+}
+
+.header::before {
+    content: '';
+    position: absolute;
+    top: -10px;
+    left: -10px;
+    right: -10px;
+    bottom: -10px;
+    background: linear-gradient(45deg, var(--accent-gold), var(--ocean-light));
+    border-radius: 25px;
+    z-index: -1;
+    opacity: 0.3;
+}
+
+h1 {
+    font-size: clamp(2rem, 5vw, 4rem);
+    font-weight: 700;
+    color: var(--accent-gold);
+    text-shadow: 0 4px 8px var(--shadow-dark);
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.1em;
+    animation: fadeInUp 1s ease-out;
+}
+
+h2 {
+    font-size: clamp(1.2rem, 3vw, 2rem);
+    font-weight: 300;
+    color: var(--accent-sand);
+    margin-bottom: 2rem;
+    opacity: 0.9;
+    animation: fadeInUp 1s ease-out 0.2s both;
+}
+
+iframe {
+    border: none;
+    border-radius: 16px;
+    box-shadow: 0 20px 40px var(--shadow-dark), 0 0 0 1px rgba(255, 255, 255, 0.1);
+    background: var(--text-white);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    max-width: 100%;
+    animation: fadeInUp 1s ease-out 0.4s both;
+}
+
+iframe:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 30px 60px var(--shadow-dark), 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    body {
+        padding: 1rem;
+    }
+    iframe {
+        width: 100%;
+        height: auto;
+    }
+}
+
+.about {
+    margin-top: 2em;
+}
