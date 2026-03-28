@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pygame
 
+from intro import play_intro
+
 
 # Window layout
 WINDOW_WIDTH = 1440
@@ -90,6 +92,10 @@ FUEL_LOW = (241, 118, 104)
 FALLBACK_OCEAN_TOP = (25, 110, 184)
 FALLBACK_OCEAN_BOTTOM = (16, 69, 132)
 TRASH_DIR = ASSETS_DIR / "trash"
+CLEAR_CLOUDS_DIR = ASSETS_DIR / "clouds on clear day"
+CLEAR_CLOUD_COUNT = 6
+CLEAR_CLOUD_MIN_SPEED = 3.5
+CLEAR_CLOUD_MAX_SPEED = 8.0
 TRASH_BASE_SPRITE_SCALE = 0.09
 TRASH_SPRITE_SCALE = TRASH_BASE_SPRITE_SCALE * WORLD_ENTITY_SCALE
 TRASH_DRIFT_MIN_SPEED = 2.5
@@ -343,6 +349,76 @@ def load_trash_sprites() -> list[pygame.Surface]:
         except pygame.error:
             continue
     return sprites
+
+
+def load_clear_cloud_sprites() -> list[pygame.Surface]:
+    sprites: list[pygame.Surface] = []
+    if not CLEAR_CLOUDS_DIR.exists():
+        return sprites
+    for path in sorted(CLEAR_CLOUDS_DIR.glob("*.png")):
+        try:
+            sprites.append(pygame.image.load(str(path)).convert_alpha())
+        except pygame.error:
+            continue
+    return sprites
+
+
+def build_clear_clouds(cloud_sprites: list[pygame.Surface], count: int) -> list[dict[str, object]]:
+    clouds: list[dict[str, object]] = []
+    if not cloud_sprites:
+        return clouds
+
+    for _ in range(max(1, count)):
+        sprite = random.choice(cloud_sprites)
+        w = sprite.get_width()
+        h = sprite.get_height()
+        clouds.append({
+            "sprite": sprite,
+            "x": random.uniform(0, WORLD_WIDTH),
+            "y": random.uniform(30, WORLD_HEIGHT - 30),
+            "vx": random.uniform(CLEAR_CLOUD_MIN_SPEED, CLEAR_CLOUD_MAX_SPEED),
+            "vy": random.uniform(-0.8, 0.8),
+            "w": w,
+            "h": h,
+        })
+    return clouds
+
+
+def update_clear_clouds(clouds: list[dict[str, object]], dt: float) -> None:
+    for cloud in clouds:
+        x = float(cloud["x"]) + float(cloud["vx"]) * dt
+        y = float(cloud["y"]) + float(cloud["vy"]) * dt
+        w = int(cloud["w"])
+        h = int(cloud["h"])
+
+        if x > WORLD_WIDTH + w:
+            x = -w
+        elif x < -w:
+            x = WORLD_WIDTH + w
+
+        if y < 20:
+            y = 20
+            cloud["vy"] = abs(float(cloud["vy"]))
+        elif y > WORLD_HEIGHT - 20:
+            y = WORLD_HEIGHT - 20
+            cloud["vy"] = -abs(float(cloud["vy"]))
+
+        cloud["x"] = x
+        cloud["y"] = y
+
+
+def draw_clear_clouds(surface: pygame.Surface, clouds: list[dict[str, object]], camera_x: float, camera_y: float) -> None:
+    for cloud in clouds:
+        sprite = cloud.get("sprite")
+        if not isinstance(sprite, pygame.Surface):
+            continue
+        cx = int(float(cloud["x"]))
+        cy = int(float(cloud["y"]))
+        sx, sy = world_to_screen(cx, cy, camera_x, camera_y)
+        rect = sprite.get_rect(center=(sx, sy))
+        if rect.right < VIEWPORT_RECT.x - 40 or rect.left > WINDOW_WIDTH + 40 or rect.bottom < -40 or rect.top > WINDOW_HEIGHT + 40:
+            continue
+        surface.blit(sprite, rect)
 
 
 def quantize_angle_to_8(angle_degrees: float) -> float:
@@ -663,6 +739,7 @@ def apply_pixelation(surface: pygame.Surface, area: pygame.Rect | None = None) -
 def draw_sidebar(
     surface: pygame.Surface,
     body_font: pygame.font.Font,
+    company_name: str,
     collected: int,
     remaining: int,
     score: int,
@@ -771,6 +848,9 @@ def draw_sidebar(
         return y + h + 10, rect
 
     y = 0
+    y, _ = draw_card(y, company_name, [
+    ], 2)
+
     y, _ = draw_card(y, "Overview", [
         f"Money: ${int(money)}",
         f"Fame: {fame:.1f}",
@@ -821,7 +901,7 @@ def draw_sidebar(
 
         actions = [("collect", "C"), ("sell", "S"), ("return", "R")]
         can_sell = boat_type == "Heavy Boat"
-        at_barge_for_crew = BASE_RECT.inflate(18, 18).collidepoint(int(boat.get("world_x", BASE_RECT.centerx)), int(boat.get("world_y", BASE_RECT.centery)))
+        at_barge_for_crew = bool(boat.get("docked", False))
         btn_w = 24
         btn_h = 20
         crew_btns = [("crew_minus", "-"), ("crew_plus", "+")]
@@ -1086,6 +1166,46 @@ def move_boat_to_nearest_trash_speed(
     return move_dx, move_dy
 
 
+def get_barge_dock_spots() -> list[dict[str, float]]:
+    # Three legal docking points: stern + port side + starboard side.
+    return [
+        {"x": float(BASE_RECT.centerx), "y": float(BASE_RECT.bottom + 34), "angle": 180.0},
+        {"x": float(BASE_RECT.left - 34), "y": float(BASE_RECT.centery - 88), "angle": 90.0},
+        {"x": float(BASE_RECT.right + 34), "y": float(BASE_RECT.centery + 88), "angle": -90.0},
+    ]
+
+
+def get_or_assign_dock_slot(boat: dict[str, object], boats: list[dict[str, object]]) -> int | None:
+    spots = get_barge_dock_spots()
+    occupied: set[int] = set()
+    for other in boats:
+        if other is boat:
+            continue
+        slot = other.get("dock_slot")
+        if isinstance(slot, int):
+            occupied.add(slot)
+
+    current = boat.get("dock_slot")
+    if isinstance(current, int) and 0 <= current < len(spots) and current not in occupied:
+        return current
+
+    free_slots = [i for i in range(len(spots)) if i not in occupied]
+    if not free_slots:
+        boat["dock_slot"] = None
+        return None
+
+    boat_rect = boat.get("rect")
+    if not isinstance(boat_rect, pygame.Rect):
+        slot = free_slots[0]
+        boat["dock_slot"] = slot
+        return slot
+
+    bx, by = boat_rect.center
+    slot = min(free_slots, key=lambda i: (spots[i]["x"] - bx) ** 2 + (spots[i]["y"] - by) ** 2)
+    boat["dock_slot"] = slot
+    return slot
+
+
 def maybe_spawn_wake(
     wake_particles: list[WakeParticle],
     boat_rect: pygame.Rect,
@@ -1131,6 +1251,14 @@ async def run_game() -> None:
     pygame.display.set_caption("MVHacks - Cleanup Fleet")
     clock = pygame.time.Clock()
 
+    captain_name = play_intro(screen, clock)
+    if captain_name is None:
+        pygame.quit()
+        return
+
+    intro_fade_alpha = 255.0
+    company_name = f"{captain_name}'s Ocean Cleanup Co."
+
     body_font = pygame.font.SysFont("Courier New", 18, bold=True)
     base_font = pygame.font.SysFont("Courier New", 18, bold=True)
 
@@ -1138,8 +1266,10 @@ async def run_game() -> None:
     boat_sprites = load_boat_sprites()
     mothership_sprite = load_mothership_sprite()
     trash_sprites = load_trash_sprites()
+    clear_cloud_sprites = load_clear_cloud_sprites()
 
     trash_items = build_initial_trash(trash_sprites)
+    clear_clouds = build_clear_clouds(clear_cloud_sprites, CLEAR_CLOUD_COUNT)
     wake_particles: list[WakeParticle] = []
 
     trash_collected = 0
@@ -1160,7 +1290,7 @@ async def run_game() -> None:
 
     collection_rate = 0.0
     elapsed_seconds = 0.0
-    event_log: list[str] = ["[00:00] Operations online"]
+    event_log: list[str] = [f"[00:00] Captain {captain_name} online"]
     transactions: list[str] = ["[00:00] Starting balance +$1200.0"]
 
     camera_x = float(BASE_RECT.centerx - VIEWPORT_RECT.width // 2)
@@ -1220,6 +1350,8 @@ async def run_game() -> None:
             "sell_timer": 0.0,
             "pending_sale_revenue": 0.0,
             "pending_sale_units": 0,
+            "dock_slot": None,
+            "docked": False,
         })
 
     def add_log(msg: str) -> None:
@@ -1265,10 +1397,7 @@ async def run_game() -> None:
 
                         assigned_total = sum(int(b["crew_assigned"]) for b in boats)
 
-                        at_barge_for_crew = False
-                        boat_rect_for_crew = boat.get("rect")
-                        if isinstance(boat_rect_for_crew, pygame.Rect):
-                            at_barge_for_crew = BASE_RECT.inflate(18, 18).collidepoint(boat_rect_for_crew.center)
+                        at_barge_for_crew = bool(boat.get("docked", False))
 
                         if action == "crew_minus":
                             if not at_barge_for_crew:
@@ -1345,6 +1474,7 @@ async def run_game() -> None:
 
         for item in trash_items:
             item.update(dt)
+        update_clear_clouds(clear_clouds, dt)
 
         returning_count = 0
         fleet_boats: list[dict[str, object]] = []
@@ -1376,6 +1506,8 @@ async def run_game() -> None:
             pending_sale_revenue = float(boat["pending_sale_revenue"])
             pending_sale_units = int(boat["pending_sale_units"])
             refuel_lock_active = bool(boat["refuel_lock"])
+            dock_slot = boat.get("dock_slot") if isinstance(boat.get("dock_slot"), int) else None
+            docked = False
 
             move_dx = 0.0
             move_dy = 0.0
@@ -1397,11 +1529,22 @@ async def run_game() -> None:
             elif refuel_lock_active:
                 boat_visible = True
                 sell_phase = "idle"
-                at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                slot = get_or_assign_dock_slot(boat, boats)
                 mode_label = "Return" if pending_mode == MODE_STOP else pending_mode.title()
 
+                if slot is None:
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                    boat_status = f"Command {mode_label}: waiting dock slot"
+                else:
+                    spot = get_barge_dock_spots()[slot]
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                    if at_base:
+                        docked = True
+                        facing_angle = float(spot["angle"])
+
                 if not at_base:
-                    boat_status = f"Command {mode_label}: returning to refuel"
+                    if slot is not None:
+                        boat_status = f"Command {mode_label}: docking"
                 else:
                     if fuel_seconds < (MAX_FUEL_SECONDS - 1e-3):
                         if boat_state != STATE_REFUELING and refuel_seconds_left <= 0.0:
@@ -1444,6 +1587,7 @@ async def run_game() -> None:
                         boat_state = STATE_RETURNING
                         boat_status = "Returning To Base (fuel reserve)"
                     else:
+                        boat["dock_slot"] = None
                         boat_status = "Collecting"
                         move_dx, move_dy = move_boat_to_nearest_trash_speed(boat_rect, trash_items, dt, boat_speed)
                         available_capacity = max(0, boat_capacity - trash_stored)
@@ -1463,7 +1607,16 @@ async def run_game() -> None:
                 elif boat_state == STATE_RETURNING:
                     returning_count += 1
                     boat_status = "Returning To Base"
-                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                    slot = get_or_assign_dock_slot(boat, boats)
+                    if slot is None:
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                        boat_status = "Waiting dock slot"
+                    else:
+                        spot = get_barge_dock_spots()[slot]
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                        if at_base:
+                            docked = True
+                            facing_angle = float(spot["angle"])
                     if at_base:
                         dropped_off = trash_stored
                         if dropped_off > 0:
@@ -1498,18 +1651,37 @@ async def run_game() -> None:
             elif boat_mode == MODE_STOP:
                 boat_visible = True
                 sell_phase = "idle"
-                at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
-                boat_status = "Stopped at barge" if at_base else "Returning to barge"
+                slot = get_or_assign_dock_slot(boat, boats)
+                if slot is None:
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                    boat_status = "Waiting dock slot"
+                else:
+                    spot = get_barge_dock_spots()[slot]
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                    if at_base:
+                        docked = True
+                        facing_angle = float(spot["angle"])
+                    boat_status = "Stopped at barge" if at_base else "Returning to dock"
 
             else:  # MODE_SELL
                 boat_state = STATE_COLLECTING
                 refuel_seconds_left = 0.0
 
                 if sell_phase == "idle":
-                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                    slot = get_or_assign_dock_slot(boat, boats)
+                    if slot is None:
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                        boat_status = "Sell mode: waiting dock slot"
+                    else:
+                        spot = get_barge_dock_spots()[slot]
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                        if at_base:
+                            docked = True
+                            facing_angle = float(spot["angle"])
                     boat_visible = True
                     if not at_base:
-                        boat_status = "Sell mode: returning to barge"
+                        if slot is not None:
+                            boat_status = "Sell mode: docking"
                     else:
                         if trash_stored > 0:
                             recycling_inventory += trash_stored
@@ -1532,6 +1704,7 @@ async def run_game() -> None:
                             boat_status = f"Sell mode: loaded {load_units}"
 
                 elif sell_phase == "to_exit":
+                    boat["dock_slot"] = None
                     boat_status = "Sell mode: outbound"
                     at_exit, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, SELL_EXIT_POINT[0], SELL_EXIT_POINT[1], dt, boat_speed)
                     if at_exit:
@@ -1540,6 +1713,7 @@ async def run_game() -> None:
                         boat_visible = False
 
                 elif sell_phase == "selling":
+                    boat["dock_slot"] = None
                     sell_timer = max(0.0, sell_timer - dt)
                     boat_status = f"Selling offshore ({sell_timer:.1f}s)"
                     boat_visible = False
@@ -1557,7 +1731,16 @@ async def run_game() -> None:
 
                 elif sell_phase == "to_base":
                     boat_status = "Returning from sale"
-                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                    slot = get_or_assign_dock_slot(boat, boats)
+                    if slot is None:
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                        boat_status = "Returning from sale (queue)"
+                    else:
+                        spot = get_barge_dock_spots()[slot]
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                        if at_base:
+                            docked = True
+                            facing_angle = float(spot["angle"])
                     boat_visible = True
                     if at_base:
                         if pending_sale_revenue > 0.0 and pending_sale_units > 0:
@@ -1608,6 +1791,8 @@ async def run_game() -> None:
             boat["pending_sale_units"] = pending_sale_units
             boat["status"] = boat_status
             boat["refuel_lock"] = refuel_lock_active
+            boat["dock_slot"] = dock_slot if isinstance(boat.get("dock_slot"), int) else boat.get("dock_slot")
+            boat["docked"] = docked
 
             fleet_boats.append({
                 "id": boat_id,
@@ -1628,6 +1813,7 @@ async def run_game() -> None:
                 "collected": collected_total,
                 "world_x": boat_rect.centerx,
                 "world_y": boat_rect.centery,
+                "docked": docked,
             })
 
         # economy + derived stats
@@ -1711,12 +1897,16 @@ async def run_game() -> None:
                 (150, 215, 255),
             )
 
+        # Clear-day clouds should be the top world layer.
+        draw_clear_clouds(screen, clear_clouds, camera_x, camera_y)
+
         total_trash_stored = sum(int(b["trash_stored"]) for b in boats)
         crew_available = max(0, crew_total - assigned_total)
 
         menu_max_scroll, mode_button_rects = draw_sidebar(
             screen,
             body_font,
+            company_name,
             trash_collected,
             len(trash_items),
             score,
@@ -1739,6 +1929,12 @@ async def run_game() -> None:
             fleet_boats,
         )
         menu_scroll = max(0.0, min(menu_scroll, menu_max_scroll))
+
+        if intro_fade_alpha > 0.0:
+            fade_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            fade_overlay.fill((0, 0, 0, int(max(0.0, min(255.0, intro_fade_alpha)))))
+            screen.blit(fade_overlay, (0, 0))
+            intro_fade_alpha = max(0.0, intro_fade_alpha - 220.0 * dt)
 
         apply_pixelation(screen, VIEWPORT_RECT)
         pygame.display.flip()
