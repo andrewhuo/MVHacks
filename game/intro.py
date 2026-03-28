@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pygame
 
+print('intro imported')
+
 TITLE_TEXT = "Mission Clean Ocean"
 BG_COLOR = (0, 0, 0)
 TEXT_COLOR = (255, 255, 255)
