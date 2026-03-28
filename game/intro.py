@@ -4,12 +4,22 @@ import asyncio
 
 import pygame
 
-print('intro imported')
-
 TITLE_TEXT = "Mission Clean Ocean"
 BG_COLOR = (0, 0, 0)
 TEXT_COLOR = (255, 255, 255)
 PROMPT_COLOR = (215, 215, 215)
+
+# TODO: Devika, add the intro paragraphs here:
+INTRO_PARAGRAPHS = [
+    """
+In the year 2050, ocean trash formed floating islands the size of cities.
+Your crew is humanity's last line of defense against rising tides and lost coastline.
+""",
+    """
+You are in command of Mission Clean Ocean.
+Navigate, collect waste, and upgrade your fleet to restore blue waters worldwide.
+""",
+]
 
 
 def _draw_center_text(surface: pygame.Surface, font: pygame.font.Font, text: str, alpha: int) -> None:
@@ -76,6 +86,46 @@ async def _run_title_sequence(screen: pygame.Surface, clock: pygame.time.Clock) 
     return True
 
 
+async def _show_paragraph_step(screen: pygame.Surface, clock: pygame.time.Clock, text: str) -> bool:
+    body_font = pygame.font.SysFont("Courier New", 26, bold=True)
+    hint_font = pygame.font.SysFont("Courier New", 18, bold=True)
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+
+    while True:
+        dt = clock.tick(60) / 1000.0
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    return False
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    return True
+
+        screen.fill(BG_COLOR)
+
+        y_start = screen.get_height() // 2 - (len(lines) * 22)
+        for i, line in enumerate(lines):
+            text_surf = body_font.render(line, True, TEXT_COLOR)
+            text_rect = text_surf.get_rect(center=(screen.get_width() // 2, y_start + i * 45))
+            screen.blit(text_surf, text_rect)
+
+        hint = hint_font.render("Press ENTER or SPACE to continue", True, PROMPT_COLOR)
+        hint_rect = hint.get_rect(center=(screen.get_width() // 2, screen.get_height() - 64))
+        screen.blit(hint, hint_rect)
+
+        pygame.display.flip()
+        await asyncio.sleep(0)
+
+
+async def _show_paragraphs(screen: pygame.Surface, clock: pygame.time.Clock, paragraphs: list[str]) -> bool:
+    for paragraph in paragraphs:
+        if not await _show_paragraph_step(screen, clock, paragraph):
+            return False
+    return True
+
+
 async def _prompt_name(screen: pygame.Surface, clock: pygame.time.Clock) -> str | None:
     title_font = pygame.font.SysFont("Courier New", 38, bold=True)
     body_font = pygame.font.SysFont("Courier New", 30, bold=True)
@@ -130,4 +180,8 @@ async def _prompt_name(screen: pygame.Surface, clock: pygame.time.Clock) -> str 
 async def play_intro(screen: pygame.Surface, clock: pygame.time.Clock) -> str | None:
     if not await _run_title_sequence(screen, clock):
         return None
+
+    if not await _show_paragraphs(screen, clock, INTRO_PARAGRAPHS):
+        return None
+
     return await _prompt_name(screen, clock)
