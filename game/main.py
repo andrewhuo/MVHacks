@@ -22,10 +22,11 @@ import pygame
 
 
 # Window layout
-WINDOW_WIDTH = 1080
-WINDOW_HEIGHT = 620
-SIDEBAR_WIDTH = 290
+WINDOW_WIDTH = 1440
+WINDOW_HEIGHT = 820
+SIDEBAR_WIDTH = 390
 PIXELATE_SCALE = 2
+WORLD_ENTITY_SCALE = 0.78
 VIEWPORT_RECT = pygame.Rect(SIDEBAR_WIDTH, 0, WINDOW_WIDTH - SIDEBAR_WIDTH, WINDOW_HEIGHT)
 
 # World settings
@@ -38,30 +39,40 @@ WORLD_RECT = pygame.Rect(0, 0, WORLD_WIDTH, WORLD_HEIGHT)
 BOAT_SIZE = (38, 24)
 BOAT_SPEED = 165.0
 STARTING_TRASH_COUNT = 120
-INITIAL_PATCH_COUNT = 12
-INITIAL_PATCH_MIN = 7
-INITIAL_PATCH_MAX = 14
-INITIAL_SCATTER_EXTRA = 36
-MAX_TRASH_ITEMS = 360
+INITIAL_PATCH_COUNT = 22
+INITIAL_PATCH_MIN = 12
+INITIAL_PATCH_MAX = 24
+INITIAL_SCATTER_EXTRA = 90
+MAX_TRASH_ITEMS = 700
 OFFSCREEN_SPAWN_INTERVAL = 1.15
-OFFSCREEN_PATCH_MIN = 4
-OFFSCREEN_PATCH_MAX = 10
+OFFSCREEN_PATCH_MIN = 8
+OFFSCREEN_PATCH_MAX = 18
 MAX_FUEL_SECONDS = 20.0
 REFUEL_SECONDS = 2.0
 MIN_REFUEL_SECONDS = 1.5
+BARGE_FUEL_CAPACITY = 1800.0
+BARGE_FUEL_START = 1100.0
+BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC = 6.0
+BARGE_FUEL_BUY_PRICE = 1.6
+HEAVY_SELL_FUEL_REBUY_UNITS = 240.0
 
 # Big base ship in world corner
-BASE_RECT = pygame.Rect(WORLD_WIDTH // 2 - 110, WORLD_HEIGHT // 2 - 65, 220, 130)
+BASE_RECT = pygame.Rect(WORLD_WIDTH // 2 - 330, WORLD_HEIGHT // 2 - 195, 660, 390)
 
 # Assets
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 OCEAN_TILE_PATH = ASSETS_DIR / "ocean.jpeg"
 OCEAN_TILE_SCALE = 0.4
 SPEEDBOAT_SPRITE_PATH = ASSETS_DIR / "smallboat.png"
-BOAT_SPRITE_SCALE = 1.0
+SAILBOAT_SPRITE_PATH = ASSETS_DIR / "sailboat.png"
+TUGBOAT_SPRITE_PATH = ASSETS_DIR / "tuboat.png"
+HOVERBOAT_SPRITE_PATH = ASSETS_DIR / "hoverboat.png"
+HEAVYBOAT_SPRITE_PATH = ASSETS_DIR / "heavyboat.png"
+BOAT_SPRITE_SCALE = 1.0 * WORLD_ENTITY_SCALE
 BOAT_SPRITE_ANGLE_OFFSET = 90.0  # sprite defaults to facing up; offset aligns it to movement
+SPEEDBOAT_DIRECT_SCALE = 1.12
 MOTHERSHIP_SPRITE_PATH = ASSETS_DIR / "mothership.png"
-MOTHERSHIP_SPRITE_SCALE = 0.45
+MOTHERSHIP_SPRITE_SCALE = 0.90 * WORLD_ENTITY_SCALE
 
 # Colors
 BOAT_FILL = (245, 192, 50)
@@ -79,7 +90,11 @@ FUEL_LOW = (241, 118, 104)
 FALLBACK_OCEAN_TOP = (25, 110, 184)
 FALLBACK_OCEAN_BOTTOM = (16, 69, 132)
 TRASH_DIR = ASSETS_DIR / "trash"
-TRASH_SPRITE_SCALE = 0.09
+TRASH_BASE_SPRITE_SCALE = 0.09
+TRASH_SPRITE_SCALE = TRASH_BASE_SPRITE_SCALE * WORLD_ENTITY_SCALE
+TRASH_DRIFT_MIN_SPEED = 2.5
+TRASH_DRIFT_MAX_SPEED = 7.0
+TRASH_DRIFT_WOBBLE = 1.2
 FALLBACK_TRASH_COLOR = (210, 228, 236)
 STATE_COLLECTING = "collecting"
 STATE_RETURNING = "returning"
@@ -94,33 +109,89 @@ SELL_DOCK_SECONDS = 1.2
 PLASTIC_SELL_PRICE = 2.4
 
 BOAT_TYPE = "Speedboat"
+# Real-world inspired references (scaled down for gameplay):
+# - Speedboat length/persons from Boston Whaler 170 Montauk (17'4", 7 persons).
+# - Tugboat speed/crew from Damen Stan Tug class sheets (around 10-11 knots, small crew).
+# - Heavy workboat speed/crew from multicat workboat profiles (~9 knots, multi-crew).
+# - Hovercraft dimensions from Griffon commercial hovercraft class specs.
 BOAT_CAPACITY_BY_TYPE = {
+    "Speedboat": 12,
     "Sailboat": 16,
-    "Speedboat": 24,
-    "Heavy Barrier": 60,
+    "Heavy Boat": 36,
+    "Tugboat": 28,
+    "Hoverboat": 20,
 }
-# Crew references (game defaults from maritime norms):
-# - Recreational speedboats are typically operated by one person.
-# - Small sailboats can be single-handed.
-# - Work/tug-style barrier boats commonly use a small multi-role crew.
-BOAT_CREW_REQUIRED_BY_TYPE = {
-    "Sailboat": 1,
+BOAT_CREW_MIN_BY_TYPE = {
     "Speedboat": 1,
-    "Heavy Barrier": 4,
+    "Sailboat": 2,
+    "Heavy Boat": 4,
+    "Tugboat": 2,
+    "Hoverboat": 2,
+}
+BOAT_CREW_MAX_BY_TYPE = {
+    "Speedboat": 2,
+    "Sailboat": 4,
+    "Heavy Boat": 8,
+    "Tugboat": 4,
+    "Hoverboat": 3,
 }
 BOAT_REFUEL_SECONDS_BY_TYPE = {
-    "Sailboat": 3.0,
-    "Speedboat": 4.0,
-    "Heavy Barrier": 6.0,
+    "Speedboat": 3.2,
+    "Sailboat": 4.0,
+    "Heavy Boat": 7.0,
+    "Tugboat": 6.0,
+    "Hoverboat": 4.5,
+}
+
+# Speeds are scaled to in-game pixels/sec from approximate knot classes.
+BOAT_SPEED_BY_TYPE = {
+    "Speedboat": 145.0,
+    "Sailboat": 34.0,
+    "Heavy Boat": 44.0,
+    "Tugboat": 52.0,
+    "Hoverboat": 165.0,
+}
+
+# In-game hull sizes use the same global world scale for all boats.
+BOAT_BASE_SIZE_BY_TYPE = {
+    "Speedboat": (18, 10),
+    "Sailboat": (22, 11),
+    "Heavy Boat": (30, 14),
+    "Tugboat": (32, 15),
+    "Hoverboat": (24, 12),
+}
+BOAT_SIZE_BY_TYPE = {
+    boat_type: (
+        max(10, int(size[0] * WORLD_ENTITY_SCALE)),
+        max(6, int(size[1] * WORLD_ENTITY_SCALE)),
+    )
+    for boat_type, size in BOAT_BASE_SIZE_BY_TYPE.items()
+}
+
+# Sprite display multipliers (applied to BOAT_SIZE_BY_TYPE for visual tuning).
+BOAT_SPRITE_SIZE_MULT_BY_TYPE = {
+    "Speedboat": 1.0,
+    "Sailboat": 7.2,
+    "Heavy Boat": 8.0,
+    "Tugboat": 8.2,
+    "Hoverboat": 7.0,
+}
+
+BOAT_COLOR_BY_TYPE = {
+    "Sailboat": (238, 226, 188),
+    "Speedboat": (245, 192, 50),
+    "Heavy Boat": (188, 122, 84),
+    "Tugboat": (208, 142, 76),
+    "Hoverboat": (166, 220, 214),
 }
 
 # Vehicle catalog from info.rtf (for progression/planning UI).
 VEHICLE_TYPES = [
-    {"name": "Sailboat", "category": "Boat", "crew_min": 2, "crew_max": 12},
-    {"name": "Speedboat", "category": "Boat", "crew_min": 4, "crew_max": 10},
-    {"name": "Heavy Barrier", "category": "Boat", "crew_min": 10, "crew_max": 50},
-    {"name": "Hovercraft Barrier", "category": "Boat", "crew_min": 25, "crew_max": 50},
-    {"name": "Tugboat", "category": "Boat", "crew_min": 5, "crew_max": 10},
+    {"name": "Sailboat", "category": "Boat", "crew_min": 2, "crew_max": 4},
+    {"name": "Speedboat", "category": "Boat", "crew_min": 1, "crew_max": 2},
+    {"name": "Heavy Boat", "category": "Boat", "crew_min": 4, "crew_max": 8},
+    {"name": "Hoverboat", "category": "Boat", "crew_min": 2, "crew_max": 3},
+    {"name": "Tugboat", "category": "Boat", "crew_min": 2, "crew_max": 4},
     {"name": "Helicopter", "category": "Vehicle", "crew_min": 1, "crew_max": 4},
 ]
 
@@ -216,7 +287,38 @@ def load_boat_sprite() -> pygame.Surface | None:
         return None
 
 
-    sprites: list[pygame.Surface] = []
+def load_boat_sprites() -> dict[str, pygame.Surface]:
+    path_map = {
+        "Speedboat": SPEEDBOAT_SPRITE_PATH,
+        "Sailboat": SAILBOAT_SPRITE_PATH,
+        "Heavy Boat": HEAVYBOAT_SPRITE_PATH,
+        "Tugboat": TUGBOAT_SPRITE_PATH,
+        "Hoverboat": HOVERBOAT_SPRITE_PATH,
+    }
+    sprites: dict[str, pygame.Surface] = {}
+    for boat_type, path in path_map.items():
+        if not path.exists():
+            continue
+        try:
+            sprite = pygame.image.load(str(path)).convert_alpha()
+        except pygame.error:
+            continue
+
+        if boat_type == "Speedboat":
+            # Use the authored asset directly, with only a slight resize.
+            target_w = max(12, int(sprite.get_width() * SPEEDBOAT_DIRECT_SCALE))
+            target_h = max(10, int(sprite.get_height() * SPEEDBOAT_DIRECT_SCALE))
+            sprites[boat_type] = pygame.transform.scale(sprite, (target_w, target_h))
+            continue
+
+        target = BOAT_SIZE_BY_TYPE.get(boat_type, BOAT_SIZE)
+        sprite_mult = BOAT_SPRITE_SIZE_MULT_BY_TYPE.get(boat_type, 1.2)
+        target_w = max(10, int(target[0] * sprite_mult))
+        target_h = max(8, int(target[1] * sprite_mult))
+        sprites[boat_type] = pygame.transform.scale(sprite, (target_w, target_h))
+    return sprites
+
+
 def load_mothership_sprite() -> pygame.Surface | None:
     if not MOTHERSHIP_SPRITE_PATH.exists():
         return None
@@ -276,14 +378,49 @@ class TrashItem:
         self.sell_value = round(max(0.8, 0.35 + size_metric * 0.42), 2)
 
         while True:
-            self.x = random.randint(24, WORLD_RECT.width - 24)
-            self.y = random.randint(24, WORLD_RECT.height - 24)
-            item_rect = pygame.Rect(self.x - self.width // 2, self.y - self.height // 2, self.width, self.height)
+            self.x = float(random.randint(24, WORLD_RECT.width - 24))
+            self.y = float(random.randint(24, WORLD_RECT.height - 24))
+            item_rect = pygame.Rect(int(self.x) - self.width // 2, int(self.y) - self.height // 2, self.width, self.height)
             if not item_rect.colliderect(BASE_RECT.inflate(30, 30)):
                 break
 
+        angle = random.uniform(0.0, math.tau)
+        speed = random.uniform(TRASH_DRIFT_MIN_SPEED, TRASH_DRIFT_MAX_SPEED)
+        self.drift_vx = math.cos(angle) * speed
+        self.drift_vy = math.sin(angle) * speed
+
+    def update(self, dt: float) -> None:
+        # Very slow drift with slight random wobble so trash feels alive but predictable.
+        self.drift_vx += random.uniform(-TRASH_DRIFT_WOBBLE, TRASH_DRIFT_WOBBLE) * dt
+        self.drift_vy += random.uniform(-TRASH_DRIFT_WOBBLE, TRASH_DRIFT_WOBBLE) * dt
+
+        speed = math.hypot(self.drift_vx, self.drift_vy)
+        if speed > TRASH_DRIFT_MAX_SPEED:
+            scale = TRASH_DRIFT_MAX_SPEED / max(1e-6, speed)
+            self.drift_vx *= scale
+            self.drift_vy *= scale
+
+        nx = self.x + self.drift_vx * dt
+        ny = self.y + self.drift_vy * dt
+
+        margin = 24
+        if nx < margin or nx > WORLD_RECT.width - margin:
+            self.drift_vx *= -1.0
+            nx = max(margin, min(nx, WORLD_RECT.width - margin))
+        if ny < margin or ny > WORLD_RECT.height - margin:
+            self.drift_vy *= -1.0
+            ny = max(margin, min(ny, WORLD_RECT.height - margin))
+
+        next_rect = pygame.Rect(int(nx) - self.width // 2, int(ny) - self.height // 2, self.width, self.height)
+        if next_rect.colliderect(BASE_RECT.inflate(20, 20)):
+            self.drift_vx *= -1.0
+            self.drift_vy *= -1.0
+        else:
+            self.x = nx
+            self.y = ny
+
     def draw(self, surface: pygame.Surface, camera_x: float, camera_y: float) -> None:
-        sx, sy = world_to_screen(self.x, self.y, camera_x, camera_y)
+        sx, sy = world_to_screen(int(self.x), int(self.y), camera_x, camera_y)
         if self.sprite is not None:
             rect = self.sprite.get_rect(center=(sx, sy))
             surface.blit(self.sprite, rect)
@@ -292,7 +429,7 @@ class TrashItem:
             pygame.draw.rect(surface, FALLBACK_TRASH_COLOR, rect, border_radius=2)
 
     def collides_with_boat(self, boat_rect: pygame.Rect) -> bool:
-        item_rect = pygame.Rect(self.x - self.width // 2, self.y - self.height // 2, self.width, self.height)
+        item_rect = pygame.Rect(int(self.x) - self.width // 2, int(self.y) - self.height // 2, self.width, self.height)
         return boat_rect.colliderect(item_rect)
 def world_view_rect(camera_x: float, camera_y: float, padding: int = 0) -> pygame.Rect:
     x = max(0, int(camera_x) - padding)
@@ -307,9 +444,9 @@ def create_trash_item(trash_sprites: list[pygame.Surface]) -> TrashItem:
 
 
 def try_place_trash(item: TrashItem, x: int, y: int) -> bool:
-    item.x = max(24, min(WORLD_RECT.width - 24, int(x)))
-    item.y = max(24, min(WORLD_RECT.height - 24, int(y)))
-    item_rect = pygame.Rect(item.x - item.width // 2, item.y - item.height // 2, item.width, item.height)
+    item.x = float(max(24, min(WORLD_RECT.width - 24, int(x))))
+    item.y = float(max(24, min(WORLD_RECT.height - 24, int(y))))
+    item_rect = pygame.Rect(int(item.x) - item.width // 2, int(item.y) - item.height // 2, item.width, item.height)
     return not item_rect.colliderect(BASE_RECT.inflate(40, 40))
 
 
@@ -429,8 +566,8 @@ class WakeParticle:
         if self.max_lifetime <= 0:
             return
         ratio = max(0.0, min(1.0, self.lifetime / self.max_lifetime))
-        radius = max(1, int(3 * ratio))
-        alpha = int(180 * ratio)
+        radius = max(2, int(7 * ratio))
+        alpha = int(230 * ratio)
 
         sx, sy = world_to_screen(int(self.x), int(self.y), camera_x, camera_y)
         if sx < VIEWPORT_RECT.x - 10 or sx > WINDOW_WIDTH + 10 or sy < -10 or sy > WINDOW_HEIGHT + 10:
@@ -484,18 +621,20 @@ def draw_boat(
     camera_y: float,
     boat_sprite: pygame.Surface | None,
     facing_angle_degrees: float,
+    boat_type: str = "Speedboat",
 ) -> None:
     boat_screen = world_rect_to_screen(boat_rect, camera_x, camera_y)
 
     if boat_sprite is None:
-        pygame.draw.rect(surface, BOAT_FILL, boat_screen, border_radius=6)
+        fill = BOAT_COLOR_BY_TYPE.get(boat_type, BOAT_FILL)
+        pygame.draw.rect(surface, fill, boat_screen, border_radius=6)
         pygame.draw.rect(surface, BOAT_OUTLINE, boat_screen, width=2, border_radius=6)
         prow = [
             (boat_screen.right, boat_screen.centery),
             (boat_screen.right + 10, boat_screen.centery - 6),
             (boat_screen.right + 10, boat_screen.centery + 6),
         ]
-        pygame.draw.polygon(surface, BOAT_FILL, prow)
+        pygame.draw.polygon(surface, fill, prow)
         pygame.draw.polygon(surface, BOAT_OUTLINE, prow, width=2)
         return
 
@@ -529,10 +668,13 @@ def draw_sidebar(
     score: int,
     money: float,
     fame: float,
-    crew_count: int,
+    crew_total: int,
+    crew_available: int,
     morale: float,
     trash_stored: int,
     recycling_inventory: int,
+    barge_fuel_storage: float,
+    barge_fuel_capacity: float,
     manpower_cost_per_min: float,
     fuel_cost_per_min: float,
     general_cost_per_min: float,
@@ -568,7 +710,7 @@ def draw_sidebar(
     content_y = 12
     content_w = SIDEBAR_WIDTH - 24
     visible_h = WINDOW_HEIGHT - 24
-    content = pygame.Surface((content_w, 1800), pygame.SRCALPHA)
+    content = pygame.Surface((content_w, 2800), pygame.SRCALPHA)
 
     card_colors = [(149, 111, 70), (141, 104, 64), (156, 118, 76), (137, 100, 61)]
     border = (103, 75, 45)
@@ -629,31 +771,32 @@ def draw_sidebar(
         return y + h + 10, rect
 
     y = 0
-    y, _ = draw_card(y, "Control Key", [
-        "C = Collect",
-        "S = Sell",
-        "R = Return To Barge",
-    ], 2)
-
     y, _ = draw_card(y, "Overview", [
         f"Money: ${int(money)}",
         f"Fame: {fame:.1f}",
         f"Score: {score}",
-        f"Crew Pool: {crew_count}",
+        f"Total Trash Collected: {collected}",
     ], 0)
 
-    y, _ = draw_card(y, "Cleanup", [
-        f"Trash Collected: {collected}",
-        f"Boat Cargo: {trash_stored}",
-        f"Recycling Stock: {recycling_inventory}",
-        f"Trash Remaining: {remaining}",
-        f"Rate/min: {collection_rate:.1f}",
+    y, _ = draw_card(y, "Barge", [
+        f"Crew At Barge: {crew_available}/{crew_total}",
+        f"Trash Stock: {recycling_inventory}",
+        f"Ops Spend/min: ${total_cost_per_min:.1f}",
+        f"Fuel Spend/min: ${fuel_cost_per_min:.1f}",
+        f"Barge Fuel: {int(barge_fuel_storage)}/{int(barge_fuel_capacity)}",
     ], 1)
+
+    y, _ = draw_card(y, "Control Key", [
+        "C = Collect",
+        "S = Sell",
+        "R = Return To Barge",
+        "- / + = Crew Allocate",
+    ], 2)
 
     # Fleet panel: one row per boat + action buttons
     fleet_top = y
-    row_h = 48
-    row_gap = 8
+    row_h = 90
+    row_gap = 12
     row_count = max(1, len(fleet_boats))
     fleet_h = 38 + row_count * (row_h + row_gap) + 8
     fleet_rect = pygame.Rect(0, fleet_top, content_w, fleet_h)
@@ -672,33 +815,80 @@ def draw_sidebar(
         boat_type = str(boat.get("type", "Boat"))
         status = str(boat.get("status", "Idle"))
         mode = str(boat.get("mode", MODE_COLLECT))
+        crew_assigned = int(boat.get("crew_assigned", 0))
+        crew_min = int(boat.get("crew_min", 0))
+        crew_max = int(boat.get("crew_max", crew_min))
 
         actions = [("collect", "C"), ("sell", "S"), ("return", "R")]
+        can_sell = boat_type == "Heavy Boat"
+        at_barge_for_crew = BASE_RECT.inflate(18, 18).collidepoint(int(boat.get("world_x", BASE_RECT.centerx)), int(boat.get("world_y", BASE_RECT.centery)))
         btn_w = 24
         btn_h = 20
-        start_x = row_rect.right - (len(actions) * (btn_w + 4)) - 4
+        crew_btns = [("crew_minus", "-"), ("crew_plus", "+")]
+        crew_btn_w = 18
+        crew_gap = 3
+        action_w = len(actions) * (btn_w + 4)
+        crew_w = len(crew_btns) * (crew_btn_w + crew_gap)
+        start_x = row_rect.right - action_w - crew_w - 12
 
         name_surf = body_font.render(f"B{boat_id} {boat_type}", True, (255, 255, 255))
-        content.blit(name_surf, (row_rect.x + 6, row_rect.y + 4))
+        content.blit(name_surf, (row_rect.x + 6, row_rect.y + 3))
 
-        text_max_w = max(30, start_x - (row_rect.x + 8) - 4)
-        status_lines = wrap_line(status, text_max_w)
-        if status_lines:
-            status_surf = body_font.render(status_lines[0], True, (240, 232, 220))
-            content.blit(status_surf, (row_rect.x + 6, row_rect.y + 24))
+        crew_surf = body_font.render(f"Crew {crew_assigned} [{crew_min}-{crew_max}]", True, (240, 232, 220))
+        content.blit(crew_surf, (row_rect.x + 6, row_rect.y + 20))
 
+        # Controls stay beside the boat row header, not below it.
+        controls_y = row_rect.y + 12
+
+        crew_start_x = start_x
+        for j, (action, short) in enumerate(crew_btns):
+            bx = crew_start_x + j * (crew_btn_w + crew_gap)
+            by = controls_y
+            brect = pygame.Rect(bx, by, crew_btn_w, btn_h)
+            crew_fill = (102, 75, 50) if at_barge_for_crew else (86, 68, 49)
+            crew_outline = (154, 122, 86) if at_barge_for_crew else (122, 96, 70)
+            txt_color = (255, 255, 255) if at_barge_for_crew else (200, 188, 170)
+            pygame.draw.rect(content, crew_fill, brect)
+            pygame.draw.rect(content, crew_outline, brect, width=1)
+            txt = body_font.render(short, True, txt_color)
+            content.blit(txt, (brect.x + 5, brect.y + 2))
+            if at_barge_for_crew:
+                mode_buttons_content[f"{boat_id}:{action}"] = brect
+
+        action_start_x = crew_start_x + crew_w + 6
         for j, (action, short) in enumerate(actions):
-            bx = start_x + j * (btn_w + 4)
-            by = row_rect.y + (row_h // 2 - btn_h // 2)
+            bx = action_start_x + j * (btn_w + 4)
+            by = controls_y
             brect = pygame.Rect(bx, by, btn_w, btn_h)
-            selected = (mode == MODE_COLLECT and action == "collect") or (mode == MODE_SELL and action == "sell") or (mode == MODE_STOP and action == "return")
-            fill = (213, 177, 126) if selected else (102, 75, 50)
-            outline = (245, 220, 180) if selected else (154, 122, 86)
+            enabled = not (action == "sell" and not can_sell)
+            selected = ((mode == MODE_COLLECT and action == "collect") or (mode == MODE_SELL and action == "sell") or (mode == MODE_STOP and action == "return")) and enabled
+            if enabled:
+                fill = (213, 177, 126) if selected else (102, 75, 50)
+                outline = (245, 220, 180) if selected else (154, 122, 86)
+                txt_color = (255, 255, 255)
+            else:
+                fill = (86, 68, 49)
+                outline = (122, 96, 70)
+                txt_color = (200, 188, 170)
             pygame.draw.rect(content, fill, brect)
             pygame.draw.rect(content, outline, brect, width=1)
-            txt = body_font.render(short, True, (255, 255, 255))
+            txt = body_font.render(short, True, txt_color)
             content.blit(txt, (brect.x + 6, brect.y + 2))
-            mode_buttons_content[f"{boat_id}:{action}"] = brect
+            if enabled:
+                mode_buttons_content[f"{boat_id}:{action}"] = brect
+
+        text_max_w = max(30, start_x - (row_rect.x + 8) - 8)
+        status_lines = wrap_line(status, text_max_w)[:2]
+        for s_idx, s_line in enumerate(status_lines):
+            status_surf = body_font.render(s_line, True, (240, 232, 220))
+            content.blit(status_surf, (row_rect.x + 6, row_rect.y + 47 + s_idx * 16))
+
+        if i < row_count - 1:
+            line_y = row_rect.bottom + (row_gap // 2)
+            px = 14
+            while px < content_w - 14:
+                pygame.draw.line(content, (181, 148, 110), (px, line_y), (min(px + 6, content_w - 14), line_y), 1)
+                px += 12
 
     y = fleet_top + fleet_h + 10
 
@@ -712,32 +902,47 @@ def draw_sidebar(
         refuel_left = float(boat.get("refuel_seconds_left", 0.0))
         refuel_total = float(boat.get("refuel_total", REFUEL_SECONDS))
         is_refueling = bool(boat.get("is_refueling", False))
-        crew_required = int(boat.get("crew_required", 1))
+        crew_min = int(boat.get("crew_min", 1))
+        crew_max = int(boat.get("crew_max", crew_min))
         crew_assigned = int(boat.get("crew_assigned", 0))
         cargo = int(boat.get("cargo", 0))
         capacity = int(boat.get("capacity", 0))
         collected_by_boat = int(boat.get("collected", collected))
 
-        detail_h = 130
+        status_lines = wrap_line(f"Status: {status}", content_w - 24)[:3]
+        trash_lines = wrap_line(f"Trash Collected: {cargo}/{capacity}", content_w - 24)[:2]
+
+        info_lines = 2 + len(status_lines) + len(trash_lines)
+        detail_h = 48 + info_lines * 18 + 28
         detail_rect = pygame.Rect(0, y, content_w, detail_h)
         pygame.draw.rect(content, card_colors[(i + 1) % len(card_colors)], detail_rect)
         pygame.draw.rect(content, border, detail_rect, width=2)
 
         title = body_font.render(f"Boat {boat_id} Panel", True, TEXT_COLOR)
         content.blit(title, (10, y + 8))
+
+        ty = y + 30
         l1 = body_font.render(f"Type: {boat_type}", True, MUTED_TEXT)
-        l2 = body_font.render(f"Status: {status}", True, MUTED_TEXT)
-        l3 = body_font.render(f"Crew: {crew_assigned}/{crew_required}", True, MUTED_TEXT)
-        l4 = body_font.render(f"Cargo: {cargo}/{capacity}  Collected: {collected_by_boat}", True, MUTED_TEXT)
-        content.blit(l1, (10, y + 30))
-        content.blit(l2, (10, y + 48))
-        content.blit(l3, (10, y + 66))
-        content.blit(l4, (10, y + 84))
+        l3 = body_font.render(f"Crew: {crew_assigned} (min {crew_min}, max {crew_max})", True, MUTED_TEXT)
+        content.blit(l1, (10, ty))
+        ty += 18
+        content.blit(l3, (10, ty))
+        ty += 18
+
+        for line in status_lines:
+            surf = body_font.render(line, True, MUTED_TEXT)
+            content.blit(surf, (10, ty))
+            ty += 18
+
+        for line in trash_lines:
+            surf = body_font.render(line, True, MUTED_TEXT)
+            content.blit(surf, (10, ty))
+            ty += 18
 
         bar_x = 10
-        bar_y = y + 106
         bar_w = content_w - 20
         bar_h = 14
+        bar_y = y + detail_h - (bar_h + 10)
         pygame.draw.rect(content, (82, 60, 40), (bar_x, bar_y, bar_w, bar_h))
 
         if is_refueling:
@@ -755,9 +960,8 @@ def draw_sidebar(
         y += detail_h + 10
 
     y, _ = draw_card(y, "Crew", [
-        f"Crew Pool: {crew_count}",
         f"Morale: {morale:.1f}%",
-        "Hire system next",
+        "Hiring panel next",
     ], 3)
 
     y, _ = draw_card(y, "Costs", [
@@ -832,12 +1036,53 @@ def move_boat_toward_point(boat_rect: pygame.Rect, target_x: int, target_y: int,
     return False, float(move_dx), float(move_dy)
 
 
+def move_boat_toward_point_speed(
+    boat_rect: pygame.Rect,
+    target_x: int,
+    target_y: int,
+    dt: float,
+    speed: float,
+) -> tuple[bool, float, float]:
+    bx, by = boat_rect.center
+    dx = target_x - bx
+    dy = target_y - by
+    distance = math.hypot(dx, dy)
+    if distance <= 1.0:
+        return True, 0.0, 0.0
+
+    step = max(1e-4, speed) * dt
+    if step >= distance:
+        boat_rect.center = (target_x, target_y)
+        boat_rect.clamp_ip(WORLD_RECT)
+        return True, float(dx), float(dy)
+
+    move_dx = (dx / distance) * step
+    move_dy = (dy / distance) * step
+    boat_rect.center = (int(bx + move_dx), int(by + move_dy))
+    boat_rect.clamp_ip(WORLD_RECT)
+    return False, float(move_dx), float(move_dy)
+
+
 def move_boat_to_nearest_trash(boat_rect: pygame.Rect, trash_items: list[TrashItem], dt: float) -> tuple[float, float]:
     if not trash_items:
         return 0.0, 0.0
     bx, by = boat_rect.center
     nearest = min(trash_items, key=lambda item: (item.x - bx) ** 2 + (item.y - by) ** 2)
-    _, move_dx, move_dy = move_boat_toward_point(boat_rect, nearest.x, nearest.y, dt)
+    _, move_dx, move_dy = move_boat_toward_point(boat_rect, int(nearest.x), int(nearest.y), dt)
+    return move_dx, move_dy
+
+
+def move_boat_to_nearest_trash_speed(
+    boat_rect: pygame.Rect,
+    trash_items: list[TrashItem],
+    dt: float,
+    speed: float,
+) -> tuple[float, float]:
+    if not trash_items:
+        return 0.0, 0.0
+    bx, by = boat_rect.center
+    nearest = min(trash_items, key=lambda item: (item.x - bx) ** 2 + (item.y - by) ** 2)
+    _, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(nearest.x), int(nearest.y), dt, speed)
     return move_dx, move_dy
 
 
@@ -853,7 +1098,7 @@ def maybe_spawn_wake(
         return
 
     # Spawn a few particles based on movement amount.
-    spawn_count = max(2, int(speed / 1.6))
+    spawn_count = max(6, int(speed / 0.8))
     cx, cy = boat_rect.center
     direction_x = move_dx / max(speed, 1e-6)
     direction_y = move_dy / max(speed, 1e-6)
@@ -862,12 +1107,12 @@ def maybe_spawn_wake(
     base_x = cx - direction_x * (boat_rect.width * 0.5)
     base_y = cy - direction_y * (boat_rect.height * 0.5)
 
-    for _ in range(min(spawn_count, 6)):
-        jitter_x = random.uniform(-1.3, 1.3)
-        jitter_y = random.uniform(-1.3, 1.3)
-        vx = -direction_x * random.uniform(18.0, 44.0) + random.uniform(-5.0, 5.0)
-        vy = -direction_y * random.uniform(18.0, 44.0) + random.uniform(-5.0, 5.0)
-        life = random.uniform(0.45, 0.85)
+    for _ in range(min(spawn_count, 16)):
+        jitter_x = random.uniform(-6.0, 6.0)
+        jitter_y = random.uniform(-6.0, 6.0)
+        vx = -direction_x * random.uniform(24.0, 62.0) + random.uniform(-10.0, 10.0)
+        vy = -direction_y * random.uniform(24.0, 62.0) + random.uniform(-10.0, 10.0)
+        life = random.uniform(0.65, 1.15)
         wake_particles.append(WakeParticle(base_x + jitter_x, base_y + jitter_y, vx, vy, life))
 
 
@@ -883,40 +1128,28 @@ def update_wake(wake_particles: list[WakeParticle], dt: float) -> None:
 async def run_game() -> None:
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Pixel Boat Cleanup V0")
+    pygame.display.set_caption("MVHacks - Cleanup Fleet")
     clock = pygame.time.Clock()
 
-    body_font = pygame.font.SysFont("couriernew", 20)
-    base_font = pygame.font.SysFont("couriernew", 20, bold=True)
+    body_font = pygame.font.SysFont("Courier New", 18, bold=True)
+    base_font = pygame.font.SysFont("Courier New", 18, bold=True)
 
     ocean_tile = load_ocean_tile()
-    boat_sprite = load_boat_sprite()
+    boat_sprites = load_boat_sprites()
     mothership_sprite = load_mothership_sprite()
     trash_sprites = load_trash_sprites()
 
-    boat_rect = pygame.Rect(BASE_RECT.centerx + 20, BASE_RECT.centery + 6, BOAT_SIZE[0], BOAT_SIZE[1])
     trash_items = build_initial_trash(trash_sprites)
     wake_particles: list[WakeParticle] = []
 
     trash_collected = 0
     score = 0
-    boat_state = STATE_COLLECTING
-    fuel_seconds = MAX_FUEL_SECONDS
-    refuel_seconds_left = 0.0
 
-    # V1.9 management stats
+    # Economy + management
     money = 1200.0
     fame = 8.0
-    crew_count = 0
+    crew_total = 5
     morale = 74.0
-    ships_total = 1
-    boat_type = BOAT_TYPE
-    boat_capacity = BOAT_CAPACITY_BY_TYPE.get(boat_type, 24)
-    boat_refuel_seconds = max(MIN_REFUEL_SECONDS, BOAT_REFUEL_SECONDS_BY_TYPE.get(boat_type, REFUEL_SECONDS))
-    trash_stored = 0
-    cargo_sale_value = 0.0
-    recycling_inventory = 0
-    recycling_stock_value = 0.0
     manpower_cost_per_min = 24.0
     fuel_cost_per_min = 12.0
     general_cost_per_min = 6.0
@@ -930,7 +1163,6 @@ async def run_game() -> None:
     event_log: list[str] = ["[00:00] Operations online"]
     transactions: list[str] = ["[00:00] Starting balance +$1200.0"]
 
-    facing_angle = 0.0
     camera_x = float(BASE_RECT.centerx - VIEWPORT_RECT.width // 2)
     camera_y = float(BASE_RECT.centery - VIEWPORT_RECT.height // 2)
     camera_x, camera_y = clamp_camera(camera_x, camera_y)
@@ -941,13 +1173,54 @@ async def run_game() -> None:
     menu_max_scroll = 0.0
     mode_button_rects: dict[str, pygame.Rect] = {}
 
-    boat_mode = MODE_COLLECT
-    sell_phase = "idle"
-    sell_timer = 0.0
-    pending_sale_revenue = 0.0
-    pending_sale_units = 0
     offscreen_spawn_timer = 0.0
-    boat_visible = True
+
+    recycling_inventory = 0
+    recycling_stock_value = 0.0
+    barge_fuel_storage = BARGE_FUEL_START
+
+    boat_layout = [
+        ("Speedboat", (95, -70)),
+    ]
+
+    boats: list[dict[str, object]] = []
+    for idx, (boat_type, offset) in enumerate(boat_layout, start=1):
+        bw, bh = BOAT_SIZE_BY_TYPE.get(boat_type, BOAT_SIZE)
+
+        boat_rect = pygame.Rect(0, 0, bw, bh)
+        boat_rect.center = (BASE_RECT.centerx + offset[0], BASE_RECT.centery + offset[1])
+        boat_rect.clamp_ip(WORLD_RECT)
+
+        crew_min = BOAT_CREW_MIN_BY_TYPE.get(boat_type, 1)
+        crew_max = BOAT_CREW_MAX_BY_TYPE.get(boat_type, max(1, crew_min))
+
+        boats.append({
+            "id": idx,
+            "type": boat_type,
+            "rect": boat_rect,
+            "mode": MODE_COLLECT,
+            "pending_mode": MODE_COLLECT,
+            "refuel_lock": True,
+            "state": STATE_COLLECTING,
+            "status": "Initializing",
+            "speed": BOAT_SPEED_BY_TYPE.get(boat_type, BOAT_SPEED),
+            "fuel": MAX_FUEL_SECONDS,
+            "refuel_left": 0.0,
+            "refuel_total": max(MIN_REFUEL_SECONDS, BOAT_REFUEL_SECONDS_BY_TYPE.get(boat_type, REFUEL_SECONDS)),
+            "capacity": BOAT_CAPACITY_BY_TYPE.get(boat_type, 20),
+            "crew_min": crew_min,
+            "crew_max": crew_max,
+            "crew_assigned": 1 if (idx == 1 and crew_min <= 1) else (crew_min if idx == 1 else 0),
+            "trash_stored": 0,
+            "cargo_sale_value": 0.0,
+            "collected_total": 0,
+            "visible": True,
+            "facing_angle": 0.0,
+            "sell_phase": "idle",
+            "sell_timer": 0.0,
+            "pending_sale_revenue": 0.0,
+            "pending_sale_units": 0,
+        })
 
     def add_log(msg: str) -> None:
         nonlocal event_log, elapsed_seconds
@@ -985,17 +1258,49 @@ async def run_game() -> None:
                             boat_id = int(boat_id_str)
                         except ValueError:
                             continue
-                        if boat_id != 1:
+
+                        boat = next((b for b in boats if int(b["id"]) == boat_id), None)
+                        if boat is None:
                             continue
 
+                        assigned_total = sum(int(b["crew_assigned"]) for b in boats)
+
+                        at_barge_for_crew = False
+                        boat_rect_for_crew = boat.get("rect")
+                        if isinstance(boat_rect_for_crew, pygame.Rect):
+                            at_barge_for_crew = BASE_RECT.inflate(18, 18).collidepoint(boat_rect_for_crew.center)
+
+                        if action == "crew_minus":
+                            if not at_barge_for_crew:
+                                add_log(f"Boat {boat_id} must be at barge to change crew")
+                                break
+                            if int(boat["crew_assigned"]) > 0:
+                                boat["crew_assigned"] = int(boat["crew_assigned"]) - 1
+                                add_log(f"Boat {boat_id} crew decreased to {boat['crew_assigned']}")
+                            break
+
+                        if action == "crew_plus":
+                            if not at_barge_for_crew:
+                                add_log(f"Boat {boat_id} must be at barge to change crew")
+                                break
+                            if int(boat["crew_assigned"]) < int(boat["crew_max"]) and assigned_total < crew_total:
+                                boat["crew_assigned"] = int(boat["crew_assigned"]) + 1
+                                add_log(f"Boat {boat_id} crew increased to {boat['crew_assigned']}")
+                            break
+
+                        if action == "sell" and str(boat.get("type", "")) != "Heavy Boat":
+                            add_log(f"Boat {boat_id}: sell mode is transfer-boat only")
+                            break
+
                         requested_mode = MODE_COLLECT if action == "collect" else (MODE_SELL if action == "sell" else MODE_STOP)
-                        if requested_mode != boat_mode:
-                            boat_mode = requested_mode
-                            label = "Return" if requested_mode == MODE_STOP else requested_mode.title()
-                            add_log(f"Boat {boat_id} mode set to {label}")
-                            add_transaction(f"Boat {boat_id} mode -> {label}")
-                            sell_phase = "idle"
-                            boat_visible = True
+                        boat["pending_mode"] = requested_mode
+                        boat["refuel_lock"] = True
+                        boat["mode"] = requested_mode
+                        boat["sell_phase"] = "idle"
+                        boat["visible"] = True
+                        label = "Return" if requested_mode == MODE_STOP else requested_mode.title()
+                        add_log(f"Boat {boat_id} command queued: {label} (refuel first)")
+                        add_transaction(f"Boat {boat_id} queued -> {label} (refuel)")
                         break
                 elif VIEWPORT_RECT.collidepoint(event.pos):
                     dragging = True
@@ -1027,7 +1332,7 @@ async def run_game() -> None:
                         camera_x,
                         camera_y,
                         patch_size,
-                        spread=random.randint(85, 170),
+                        spread=random.randint(75, 145),
                     )
                 else:
                     spawn_offscreen_trash(
@@ -1038,171 +1343,297 @@ async def run_game() -> None:
                         random.randint(2, 5),
                     )
 
-        move_dx = 0.0
-        move_dy = 0.0
-        newly_collected = 0
-        gained_score = 0
-        gained_sale_value = 0.0
+        for item in trash_items:
+            item.update(dt)
 
-        boat_status = "Idle"
+        returning_count = 0
+        fleet_boats: list[dict[str, object]] = []
 
-        if boat_mode == MODE_COLLECT:
-            boat_visible = True
-            sell_phase = "idle"
+        for boat in boats:
+            boat_rect = boat["rect"]
+            assert isinstance(boat_rect, pygame.Rect)
 
-            if boat_state == STATE_COLLECTING:
-                bx, by = boat_rect.center
-                dist_to_barge = math.hypot(BASE_RECT.centerx - bx, BASE_RECT.centery - by)
-                fuel_needed_to_barge = (dist_to_barge / max(1e-6, BOAT_SPEED)) + 0.35
+            boat_id = int(boat["id"])
+            boat_type = str(boat["type"])
+            boat_mode = str(boat["mode"])
+            pending_mode = str(boat["pending_mode"])
+            boat_state = str(boat["state"])
+            boat_speed = float(boat["speed"])
+            fuel_seconds = float(boat["fuel"])
+            refuel_seconds_left = float(boat["refuel_left"])
+            boat_refuel_seconds = float(boat["refuel_total"])
+            boat_capacity = int(boat["capacity"])
+            crew_min = int(boat["crew_min"])
+            crew_max = int(boat["crew_max"])
+            crew_assigned = int(boat["crew_assigned"])
+            trash_stored = int(boat["trash_stored"])
+            cargo_sale_value = float(boat["cargo_sale_value"])
+            collected_total = int(boat["collected_total"])
+            boat_visible = bool(boat["visible"])
+            facing_angle = float(boat["facing_angle"])
+            sell_phase = str(boat["sell_phase"])
+            sell_timer = float(boat["sell_timer"])
+            pending_sale_revenue = float(boat["pending_sale_revenue"])
+            pending_sale_units = int(boat["pending_sale_units"])
+            refuel_lock_active = bool(boat["refuel_lock"])
 
-                if fuel_seconds <= fuel_needed_to_barge:
-                    boat_state = STATE_RETURNING
-                    boat_status = "Returning To Base (fuel reserve)"
-                    add_log("Fuel reserve reached, returning to mothership")
-                else:
-                    boat_status = "Collecting"
-                    move_dx, move_dy = move_boat_to_nearest_trash(boat_rect, trash_items, dt)
+            move_dx = 0.0
+            move_dy = 0.0
+            boat_status = "Idle"
+            newly_collected = 0
+            gained_score = 0
+            gained_sale_value = 0.0
 
-                    available_capacity = max(0, boat_capacity - trash_stored)
-                    if available_capacity > 0:
-                        newly_collected, gained_score, gained_sale_value = collect_on_contact(boat_rect, trash_items, available_capacity)
-                        if newly_collected > 0:
-                            trash_stored += newly_collected
-                            cargo_sale_value += gained_sale_value
-                            fame_multiplier = 1.0 + (fame / 100.0)
-                            score += max(1, int(round(gained_score * fame_multiplier)))
-                            fame = min(100.0, fame + newly_collected * 0.06)
-                    else:
-                        boat_state = STATE_RETURNING
-                        boat_status = "Returning To Base (cargo full)"
+            has_operating_crew = crew_assigned >= crew_min
 
-            elif boat_state == STATE_RETURNING:
-                boat_status = "Returning To Base"
-                at_base, move_dx, move_dy = move_boat_toward_point(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt)
-                if at_base:
-                    dropped_off = trash_stored
-                    if dropped_off > 0:
-                        trash_collected += dropped_off
-                        trash_stored = 0
-                        recycling_inventory += dropped_off
-                        recycling_stock_value += cargo_sale_value
-                        cargo_sale_value = 0.0
-                        add_log(f"Dropped off {dropped_off} trash to recycling stock")
-                        add_transaction(f"Stocked recycling +{dropped_off} units")
-                        if trash_collected % 10 == 0:
-                            add_log(f"Collected {trash_collected} total trash")
-
-                    boat_state = STATE_REFUELING
-                    refuel_seconds_left = boat_refuel_seconds
-                    add_log("Docked at mothership, refueling")
-
-            else:
-                boat_status = f"Refueling ({max(0.0, refuel_seconds_left):.1f}s)"
-                refuel_seconds_left -= dt
-                if refuel_seconds_left <= 0.0:
-                    fuel_seconds = MAX_FUEL_SECONDS
+            if not has_operating_crew:
+                boat_visible = True
+                sell_phase = "idle"
+                if refuel_seconds_left > 0.0:
                     refuel_seconds_left = 0.0
-                    boat_state = STATE_COLLECTING
-                    add_log("Refuel complete, redeploying")
+                boat_state = STATE_COLLECTING
+                boat_status = f"Need crew ({crew_assigned}/{crew_min})"
 
-        elif boat_mode == MODE_STOP:
-            boat_visible = True
-            sell_phase = "idle"
-            at_base, move_dx, move_dy = move_boat_toward_point(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt)
-            if at_base:
-                boat_status = "Stopped at barge"
-            else:
-                boat_status = "Returning to barge"
-
-        else:  # MODE_SELL
-            boat_state = STATE_COLLECTING
-            refuel_seconds_left = 0.0
-
-            if sell_phase == "idle":
-                # Always return to barge first.
-                at_base, move_dx, move_dy = move_boat_toward_point(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt)
+            elif refuel_lock_active:
                 boat_visible = True
+                sell_phase = "idle"
+                at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                mode_label = "Return" if pending_mode == MODE_STOP else pending_mode.title()
+
                 if not at_base:
-                    boat_status = "Sell mode: returning to barge"
+                    boat_status = f"Command {mode_label}: returning to refuel"
                 else:
-                    # Any onboard trash becomes recycling stock at barge.
-                    if trash_stored > 0:
-                        recycling_inventory += trash_stored
-                        recycling_stock_value += cargo_sale_value
-                        add_log(f"Moved {trash_stored} cargo to recycling stock")
-                        add_transaction(f"Stock transfer +{trash_stored} units")
-                        trash_stored = 0
-                        cargo_sale_value = 0.0
+                    if fuel_seconds < (MAX_FUEL_SECONDS - 1e-3):
+                        if boat_state != STATE_REFUELING and refuel_seconds_left <= 0.0:
+                            boat_state = STATE_REFUELING
+                            refuel_seconds_left = boat_refuel_seconds
+                            add_log(f"Boat {boat_id} docked, refueling before command")
 
-                    if recycling_inventory <= 0:
-                        boat_status = "Sell mode: waiting stock"
+                        boat_status = f"Refueling before {mode_label} ({max(0.0, refuel_seconds_left):.1f}s)"
+                        refuel_seconds_left -= dt
+                        if refuel_seconds_left <= 0.0:
+                            required_units = max(0.0, (MAX_FUEL_SECONDS - fuel_seconds) * BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC)
+                            if barge_fuel_storage + 1e-6 >= required_units:
+                                barge_fuel_storage = max(0.0, barge_fuel_storage - required_units)
+                                fuel_seconds = MAX_FUEL_SECONDS
+                                refuel_seconds_left = 0.0
+                                boat_state = STATE_COLLECTING
+                                refuel_lock_active = False
+                                boat_mode = pending_mode
+                                add_log(f"Boat {boat_id} refuel complete, executing {mode_label}")
+                            else:
+                                boat_status = "Waiting barge fuel"
+                                refuel_seconds_left = 0.0
                     else:
-                        load_units = min(boat_capacity, recycling_inventory)
-                        stock_units_before = recycling_inventory
-                        unit_value = (recycling_stock_value / stock_units_before) if stock_units_before > 0 else 0.0
-                        load_value = unit_value * load_units
+                        boat_state = STATE_COLLECTING
+                        refuel_seconds_left = 0.0
+                        refuel_lock_active = False
+                        boat_mode = pending_mode
+                        boat_status = f"Fuel ready, executing {mode_label}"
 
-                        recycling_inventory -= load_units
-                        recycling_stock_value = max(0.0, recycling_stock_value - load_value)
-                        trash_stored = load_units
-                        cargo_sale_value = load_value
-                        sell_phase = "to_exit"
-                        boat_status = f"Sell mode: loaded {load_units}"
-                        add_transaction(f"Loaded for sale {load_units}/{boat_capacity}")
+            elif boat_mode == MODE_COLLECT:
+                boat_visible = True
+                sell_phase = "idle"
 
-            elif sell_phase == "to_exit":
-                boat_status = "Sell mode: outbound"
-                at_exit, move_dx, move_dy = move_boat_toward_point(boat_rect, SELL_EXIT_POINT[0], SELL_EXIT_POINT[1], dt)
-                if at_exit:
-                    sell_phase = "selling"
-                    sell_timer = SELL_TRIP_SECONDS
-                    boat_visible = False
-                    add_log("Boat left map to sell plastic")
+                if boat_state == STATE_COLLECTING:
+                    bx, by = boat_rect.center
+                    dist_to_barge = math.hypot(BASE_RECT.centerx - bx, BASE_RECT.centery - by)
+                    fuel_needed_to_barge = (dist_to_barge / max(1e-6, boat_speed)) + 0.35
 
-            elif sell_phase == "selling":
-                sell_timer = max(0.0, sell_timer - dt)
-                boat_status = f"Selling offshore ({sell_timer:.1f}s)"
-                boat_visible = False
-                if sell_timer <= 0.0:
-                    sold_units = trash_stored
-                    if sold_units > 0:
-                        sell_multiplier = 1.0 + (fame / 200.0)
-                        pending_sale_revenue = cargo_sale_value * sell_multiplier
-                        pending_sale_units = sold_units
-                        trash_stored = 0
-                        cargo_sale_value = 0.0
-                    boat_rect.center = SELL_EXIT_POINT
-                    sell_phase = "to_base"
+                    if fuel_seconds <= fuel_needed_to_barge:
+                        boat_state = STATE_RETURNING
+                        boat_status = "Returning To Base (fuel reserve)"
+                    else:
+                        boat_status = "Collecting"
+                        move_dx, move_dy = move_boat_to_nearest_trash_speed(boat_rect, trash_items, dt, boat_speed)
+                        available_capacity = max(0, boat_capacity - trash_stored)
+                        if available_capacity > 0:
+                            newly_collected, gained_score, gained_sale_value = collect_on_contact(boat_rect, trash_items, available_capacity)
+                            if newly_collected > 0:
+                                trash_stored += newly_collected
+                                cargo_sale_value += gained_sale_value
+                                fame_multiplier = 1.0 + (fame / 100.0)
+                                score += max(1, int(round(gained_score * fame_multiplier)))
+                                fame = min(100.0, fame + newly_collected * 0.04)
+                                collected_total += newly_collected
+                        else:
+                            boat_state = STATE_RETURNING
+                            boat_status = "Returning To Base (cargo full)"
+
+                elif boat_state == STATE_RETURNING:
+                    returning_count += 1
+                    boat_status = "Returning To Base"
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                    if at_base:
+                        dropped_off = trash_stored
+                        if dropped_off > 0:
+                            trash_collected += dropped_off
+                            trash_stored = 0
+                            recycling_inventory += dropped_off
+                            recycling_stock_value += cargo_sale_value
+                            cargo_sale_value = 0.0
+                            add_transaction(f"Boat {boat_id} stocked +{dropped_off} units")
+
+                        boat_state = STATE_REFUELING
+                        refuel_seconds_left = boat_refuel_seconds
+
+                else:
+                    boat_status = f"Refueling ({max(0.0, refuel_seconds_left):.1f}s)"
+                    refuel_seconds_left -= dt
+                    if refuel_seconds_left <= 0.0:
+                        required_units = max(0.0, (MAX_FUEL_SECONDS - fuel_seconds) * BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC)
+                        if barge_fuel_storage + 1e-6 >= required_units:
+                            barge_fuel_storage = max(0.0, barge_fuel_storage - required_units)
+                            fuel_seconds = MAX_FUEL_SECONDS
+                            refuel_seconds_left = 0.0
+                            boat_state = STATE_COLLECTING
+                        else:
+                            boat_status = "Waiting barge fuel"
+                            refuel_seconds_left = 0.0
+
+            elif boat_mode == MODE_SELL and boat_type != "Heavy Boat":
+                boat_mode = MODE_COLLECT
+                boat_status = "Sell reserved for Heavy Boat"
+
+            elif boat_mode == MODE_STOP:
+                boat_visible = True
+                sell_phase = "idle"
+                at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                boat_status = "Stopped at barge" if at_base else "Returning to barge"
+
+            else:  # MODE_SELL
+                boat_state = STATE_COLLECTING
+                refuel_seconds_left = 0.0
+
+                if sell_phase == "idle":
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
                     boat_visible = True
+                    if not at_base:
+                        boat_status = "Sell mode: returning to barge"
+                    else:
+                        if trash_stored > 0:
+                            recycling_inventory += trash_stored
+                            recycling_stock_value += cargo_sale_value
+                            trash_stored = 0
+                            cargo_sale_value = 0.0
 
-            elif sell_phase == "to_base":
-                boat_status = "Returning from sale"
-                at_base, move_dx, move_dy = move_boat_toward_point(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt)
-                boat_visible = True
-                if at_base:
-                    if pending_sale_revenue > 0.0 and pending_sale_units > 0:
-                        money += pending_sale_revenue
-                        add_log(f"Sale settled at barge: ${pending_sale_revenue:.1f}")
-                        add_transaction(f"Recycling sale +${pending_sale_revenue:.1f} ({pending_sale_units} units)")
-                        pending_sale_revenue = 0.0
-                        pending_sale_units = 0
-                    sell_phase = "dock_wait"
-                    sell_timer = SELL_DOCK_SECONDS
+                        if recycling_inventory <= 0:
+                            boat_status = "Sell mode: waiting stock"
+                        else:
+                            load_units = min(boat_capacity, recycling_inventory)
+                            stock_units_before = recycling_inventory
+                            unit_value = (recycling_stock_value / stock_units_before) if stock_units_before > 0 else 0.0
+                            load_value = unit_value * load_units
+                            recycling_inventory -= load_units
+                            recycling_stock_value = max(0.0, recycling_stock_value - load_value)
+                            trash_stored = load_units
+                            cargo_sale_value = load_value
+                            sell_phase = "to_exit"
+                            boat_status = f"Sell mode: loaded {load_units}"
 
-            else:  # dock_wait
-                sell_timer = max(0.0, sell_timer - dt)
-                boat_status = f"Docking at barge ({sell_timer:.1f}s)"
-                boat_visible = True
-                if sell_timer <= 0.0:
-                    sell_phase = "idle"
+                elif sell_phase == "to_exit":
+                    boat_status = "Sell mode: outbound"
+                    at_exit, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, SELL_EXIT_POINT[0], SELL_EXIT_POINT[1], dt, boat_speed)
+                    if at_exit:
+                        sell_phase = "selling"
+                        sell_timer = SELL_TRIP_SECONDS
+                        boat_visible = False
 
-        # Fuel burns only while the boat is actually moving.
-        if math.hypot(move_dx, move_dy) > 1e-3:
-            fuel_seconds = max(0.0, fuel_seconds - dt)
+                elif sell_phase == "selling":
+                    sell_timer = max(0.0, sell_timer - dt)
+                    boat_status = f"Selling offshore ({sell_timer:.1f}s)"
+                    boat_visible = False
+                    if sell_timer <= 0.0:
+                        sold_units = trash_stored
+                        if sold_units > 0:
+                            sell_multiplier = 1.0 + (fame / 200.0)
+                            pending_sale_revenue = cargo_sale_value * sell_multiplier
+                            pending_sale_units = sold_units
+                            trash_stored = 0
+                            cargo_sale_value = 0.0
+                        boat_rect.center = SELL_EXIT_POINT
+                        sell_phase = "to_base"
+                        boat_visible = True
+
+                elif sell_phase == "to_base":
+                    boat_status = "Returning from sale"
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.centery, dt, boat_speed)
+                    boat_visible = True
+                    if at_base:
+                        if pending_sale_revenue > 0.0 and pending_sale_units > 0:
+                            money += pending_sale_revenue
+                            add_transaction(f"Boat {boat_id} sale +${pending_sale_revenue:.1f} ({pending_sale_units} units)")
+                            pending_sale_revenue = 0.0
+                            pending_sale_units = 0
+
+                        if boat_type == "Heavy Boat":
+                            fuel_room = max(0.0, BARGE_FUEL_CAPACITY - barge_fuel_storage)
+                            buy_units = min(HEAVY_SELL_FUEL_REBUY_UNITS, fuel_room, money / max(1e-6, BARGE_FUEL_BUY_PRICE))
+                            if buy_units > 0.1:
+                                buy_cost = buy_units * BARGE_FUEL_BUY_PRICE
+                                money -= buy_cost
+                                barge_fuel_storage = min(BARGE_FUEL_CAPACITY, barge_fuel_storage + buy_units)
+                                add_transaction(f"Heavy Boat fuel load +{int(buy_units)} (cost ${buy_cost:.1f})")
+
+                        sell_phase = "dock_wait"
+                        sell_timer = SELL_DOCK_SECONDS
+
+                else:
+                    sell_timer = max(0.0, sell_timer - dt)
+                    boat_status = f"Docking at barge ({sell_timer:.1f}s)"
+                    boat_visible = True
+                    if sell_timer <= 0.0:
+                        sell_phase = "idle"
+
+            if math.hypot(move_dx, move_dy) > 1e-3:
+                fuel_seconds = max(0.0, fuel_seconds - dt)
+
+            if abs(move_dx) > 1e-4 or abs(move_dy) > 1e-4:
+                facing_angle = math.degrees(math.atan2(move_dy, move_dx))
+                maybe_spawn_wake(wake_particles, boat_rect, move_dx, move_dy, dt)
+
+            boat["mode"] = boat_mode
+            boat["pending_mode"] = pending_mode
+            boat["state"] = boat_state
+            boat["fuel"] = fuel_seconds
+            boat["refuel_left"] = max(0.0, refuel_seconds_left)
+            boat["trash_stored"] = trash_stored
+            boat["cargo_sale_value"] = cargo_sale_value
+            boat["collected_total"] = collected_total
+            boat["visible"] = boat_visible
+            boat["facing_angle"] = facing_angle
+            boat["sell_phase"] = sell_phase
+            boat["sell_timer"] = sell_timer
+            boat["pending_sale_revenue"] = pending_sale_revenue
+            boat["pending_sale_units"] = pending_sale_units
+            boat["status"] = boat_status
+            boat["refuel_lock"] = refuel_lock_active
+
+            fleet_boats.append({
+                "id": boat_id,
+                "type": boat_type,
+                "mode": boat_mode,
+                "status": boat_status,
+                "state": boat_state,
+                "fuel_seconds": fuel_seconds,
+                "max_fuel": MAX_FUEL_SECONDS,
+                "refuel_seconds_left": float(boat["refuel_left"]),
+                "refuel_total": boat_refuel_seconds,
+                "is_refueling": boat_state == STATE_REFUELING,
+                "crew_min": crew_min,
+                "crew_max": crew_max,
+                "crew_assigned": crew_assigned,
+                "cargo": trash_stored,
+                "capacity": boat_capacity,
+                "collected": collected_total,
+                "world_x": boat_rect.centerx,
+                "world_y": boat_rect.centery,
+            })
 
         # economy + derived stats
-        manpower_cost = (manpower_cost_per_min / 60.0) * dt
-        fuel_cost = (fuel_cost_per_min / 60.0) * dt
+        assigned_total = sum(int(b["crew_assigned"]) for b in boats)
+        manpower_cost = ((manpower_cost_per_min + assigned_total * 1.4) / 60.0) * dt
+        fuel_cost = ((fuel_cost_per_min + len(boats) * 1.1) / 60.0) * dt
         general_cost = (general_cost_per_min / 60.0) * dt
         frame_cost = manpower_cost + fuel_cost + general_cost
         money -= frame_cost
@@ -1212,20 +1643,16 @@ async def run_game() -> None:
         if cost_transaction_timer >= cost_transaction_interval:
             add_transaction(
                 f"Ops costs -${pending_cost_total:.1f} "
-                f"(crew -${(manpower_cost_per_min / 60.0 * cost_transaction_timer):.1f}, "
-                f"fuel -${(fuel_cost_per_min / 60.0 * cost_transaction_timer):.1f}, "
+                f"(crew -${((manpower_cost_per_min + assigned_total * 1.4) / 60.0 * cost_transaction_timer):.1f}, "
+                f"fuel -${((fuel_cost_per_min + len(boats) * 1.1) / 60.0 * cost_transaction_timer):.1f}, "
                 f"general -${(general_cost_per_min / 60.0 * cost_transaction_timer):.1f})"
             )
             cost_transaction_timer = 0.0
             pending_cost_total = 0.0
 
         collection_rate = (trash_collected / max(1.0, elapsed_seconds)) * 60.0
-        morale_penalty = 8.0 if (boat_mode == MODE_COLLECT and boat_state == STATE_RETURNING) else 0.0
+        morale_penalty = 3.0 * returning_count
         morale = max(40.0, min(96.0, 68.0 + fame * 0.25 - morale_penalty))
-
-        if abs(move_dx) > 1e-4 or abs(move_dy) > 1e-4:
-            facing_angle = math.degrees(math.atan2(move_dy, move_dx))
-            maybe_spawn_wake(wake_particles, boat_rect, move_dx, move_dy, dt)
 
         update_wake(wake_particles, dt)
 
@@ -1242,32 +1669,21 @@ async def run_game() -> None:
             p.draw(screen, camera_x, camera_y)
 
         draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite)
-        if boat_visible:
-            draw_boat(screen, boat_rect, camera_x, camera_y, boat_sprite, facing_angle)
 
-        boat_required_crew = BOAT_CREW_REQUIRED_BY_TYPE.get(boat_type, 1)
-        boat_assigned_crew = min(crew_count, boat_required_crew) if crew_count > 0 else 0
-        fleet_boats = [
-            {
-                "id": 1,
-                "type": boat_type,
-                "mode": boat_mode,
-                "status": boat_status,
-                "state": boat_state,
-                "fuel_seconds": fuel_seconds,
-                "max_fuel": MAX_FUEL_SECONDS,
-                "refuel_seconds_left": refuel_seconds_left,
-                "refuel_total": boat_refuel_seconds,
-                "is_refueling": boat_state == STATE_REFUELING,
-                "crew_required": boat_required_crew,
-                "crew_assigned": boat_assigned_crew,
-                "cargo": trash_stored,
-                "capacity": boat_capacity,
-                "collected": trash_collected,
-                "world_x": boat_rect.centerx,
-                "world_y": boat_rect.centery,
-            }
-        ]
+        for boat in boats:
+            if not bool(boat["visible"]):
+                continue
+            boat_type = str(boat["type"])
+            sprite = boat_sprites.get(boat_type)
+            draw_boat(
+                screen,
+                boat["rect"],
+                camera_x,
+                camera_y,
+                sprite,
+                float(boat["facing_angle"]),
+                boat_type,
+            )
 
         draw_offscreen_target_indicator(
             screen,
@@ -1279,6 +1695,7 @@ async def run_game() -> None:
             "Barge",
             (245, 220, 140),
         )
+
         for boat in fleet_boats:
             bx = int(boat.get("world_x", BASE_RECT.centerx))
             by = int(boat.get("world_y", BASE_RECT.centery))
@@ -1294,6 +1711,9 @@ async def run_game() -> None:
                 (150, 215, 255),
             )
 
+        total_trash_stored = sum(int(b["trash_stored"]) for b in boats)
+        crew_available = max(0, crew_total - assigned_total)
+
         menu_max_scroll, mode_button_rects = draw_sidebar(
             screen,
             body_font,
@@ -1302,14 +1722,17 @@ async def run_game() -> None:
             score,
             money,
             fame,
-            crew_count,
+            crew_total,
+            crew_available,
             morale,
-            trash_stored,
+            total_trash_stored,
             recycling_inventory,
-            manpower_cost_per_min,
-            fuel_cost_per_min,
+            barge_fuel_storage,
+            BARGE_FUEL_CAPACITY,
+            manpower_cost_per_min + assigned_total * 1.4,
+            fuel_cost_per_min + len(boats) * 1.1,
             general_cost_per_min,
-            total_cost_per_min,
+            (manpower_cost_per_min + assigned_total * 1.4) + (fuel_cost_per_min + len(boats) * 1.1) + general_cost_per_min,
             collection_rate,
             transactions,
             menu_scroll,
@@ -1322,6 +1745,7 @@ async def run_game() -> None:
         await asyncio.sleep(0)
 
     pygame.quit()
+
 
 async def main() -> None:
     await run_game()
