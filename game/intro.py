@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pygame
 
 print('intro imported')
@@ -18,7 +20,7 @@ def _draw_center_text(surface: pygame.Surface, font: pygame.font.Font, text: str
     surface.blit(txt, rect)
 
 
-def _run_title_sequence(screen: pygame.Surface, clock: pygame.time.Clock) -> bool:
+async def _run_title_sequence(screen: pygame.Surface, clock: pygame.time.Clock) -> bool:
     font = pygame.font.SysFont("Courier New", 64, bold=True)
 
     pre_wait = 0.55
@@ -69,13 +71,15 @@ def _run_title_sequence(screen: pygame.Surface, clock: pygame.time.Clock) -> boo
                 running = False
 
         pygame.display.flip()
+        await asyncio.sleep(0)
 
     return True
 
 
-def _prompt_name(screen: pygame.Surface, clock: pygame.time.Clock) -> str | None:
+async def _prompt_name(screen: pygame.Surface, clock: pygame.time.Clock) -> str | None:
     title_font = pygame.font.SysFont("Courier New", 38, bold=True)
     body_font = pygame.font.SysFont("Courier New", 30, bold=True)
+    hint_font = pygame.font.SysFont("Courier New", 20, bold=True)
 
     prompt = "Enter Your In-Game Name:"
     value = ""
@@ -115,14 +119,15 @@ def _prompt_name(screen: pygame.Surface, clock: pygame.time.Clock) -> str | None
         v_rect = v.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2 + 45))
         screen.blit(v, v_rect)
 
-        hint = pygame.font.SysFont("Courier New", 20, bold=True).render("Press ENTER to continue", True, (170, 170, 170))
+        hint = hint_font.render("Press ENTER to continue", True, (170, 170, 170))
         hint_rect = hint.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2 + 95))
         screen.blit(hint, hint_rect)
 
         pygame.display.flip()
+        await asyncio.sleep(0)
 
 
-def play_intro(screen: pygame.Surface, clock: pygame.time.Clock) -> str | None:
-    if not _run_title_sequence(screen, clock):
+async def play_intro(screen: pygame.Surface, clock: pygame.time.Clock) -> str | None:
+    if not await _run_title_sequence(screen, clock):
         return None
-    return _prompt_name(screen, clock)
+    return await _prompt_name(screen, clock)
