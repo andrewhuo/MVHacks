@@ -20,7 +20,11 @@ from pathlib import Path
 
 import pygame
 
-from intro import play_intro
+try:
+    from .intro import play_intro
+except ImportError:
+    from intro import play_intro
+
 
 
 # Window layout
@@ -29,6 +33,7 @@ WINDOW_HEIGHT = 820
 SIDEBAR_WIDTH = 390
 PIXELATE_SCALE = 2
 WORLD_ENTITY_SCALE = 0.78
+SKIP_INTRO_FOR_TESTING = True
 VIEWPORT_RECT = pygame.Rect(SIDEBAR_WIDTH, 0, WINDOW_WIDTH - SIDEBAR_WIDTH, WINDOW_HEIGHT)
 
 # World settings
@@ -1166,17 +1171,73 @@ def move_boat_to_nearest_trash_speed(
     return move_dx, move_dy
 
 
-def get_barge_dock_spots() -> list[dict[str, float]]:
-    # Three legal docking points: stern + port side + starboard side.
+def get_barge_dock_spots(mothership_sprite: pygame.Surface | None) -> list[dict[str, float]]:
+    # Only three legal docking sides: stern (left), north/top, and south/bottom.
+    # The bow/right side is intentionally excluded.
+    if mothership_sprite is None:
+        return [
+            {"x": float(BASE_RECT.left - 34), "y": float(BASE_RECT.centery), "angle": 180.0},
+            {"x": float(BASE_RECT.centerx), "y": float(BASE_RECT.top - 30), "angle": 90.0},
+            {"x": float(BASE_RECT.centerx), "y": float(BASE_RECT.bottom + 30), "angle": -90.0},
+        ]
+
+    w = mothership_sprite.get_width()
+    h = mothership_sprite.get_height()
+    mask = pygame.mask.from_surface(mothership_sprite)
+    bounds = mask.get_bounding_rects()
+
+    if bounds:
+        opaque = bounds[0].copy()
+        for r in bounds[1:]:
+            opaque.union_ip(r)
+    else:
+        opaque = pygame.Rect(0, 0, w, h)
+
+    left = float(opaque.left)
+    top = float(opaque.top)
+    bottom = float(opaque.bottom)
+
+    cx = float(BASE_RECT.centerx)
+    cy = float(BASE_RECT.centery)
+
+    def local_to_world(lx: float, ly: float) -> tuple[float, float]:
+        return cx + (lx - w * 0.5), cy + (ly - h * 0.5)
+
+    stern_x, stern_y = local_to_world(left - 18.0, (top + bottom) * 0.5)
+    north_x, north_y = local_to_world(left + (opaque.width * 0.45), top - 16.0)
+    south_x, south_y = local_to_world(left + (opaque.width * 0.45), bottom + 16.0)
+
     return [
-        {"x": float(BASE_RECT.centerx), "y": float(BASE_RECT.bottom + 34), "angle": 180.0},
-        {"x": float(BASE_RECT.left - 34), "y": float(BASE_RECT.centery - 88), "angle": 90.0},
-        {"x": float(BASE_RECT.right + 34), "y": float(BASE_RECT.centery + 88), "angle": -90.0},
+        {"x": stern_x, "y": stern_y, "angle": 180.0},
+        {"x": north_x, "y": north_y, "angle": 90.0},
+        {"x": south_x, "y": south_y, "angle": -90.0},
     ]
+def keep_boat_out_of_barge(boat_rect: pygame.Rect) -> None:
+    # Hard collision barrier around the mothership: boats can dock beside it, never inside it.
+    no_go = BASE_RECT.inflate(-6, -6)
+    if not boat_rect.colliderect(no_go):
+        return
+
+    # Push the boat out through the nearest side.
+    over_l = boat_rect.right - no_go.left
+    over_r = no_go.right - boat_rect.left
+    over_t = boat_rect.bottom - no_go.top
+    over_b = no_go.bottom - boat_rect.top
+
+    min_overlap = min(over_l, over_r, over_t, over_b)
+    if min_overlap == over_l:
+        boat_rect.right = no_go.left - 1
+    elif min_overlap == over_r:
+        boat_rect.left = no_go.right + 1
+    elif min_overlap == over_t:
+        boat_rect.bottom = no_go.top - 1
+    else:
+        boat_rect.top = no_go.bottom + 1
+
+    boat_rect.clamp_ip(WORLD_RECT)
 
 
-def get_or_assign_dock_slot(boat: dict[str, object], boats: list[dict[str, object]]) -> int | None:
-    spots = get_barge_dock_spots()
+def get_or_assign_dock_slot(boat: dict[str, object], boats: list[dict[str, object]], spots: list[dict[str, float]]) -> int | None:
     occupied: set[int] = set()
     for other in boats:
         if other is boat:
@@ -1204,6 +1265,57 @@ def get_or_assign_dock_slot(boat: dict[str, object], boats: list[dict[str, objec
     slot = min(free_slots, key=lambda i: (spots[i]["x"] - bx) ** 2 + (spots[i]["y"] - by) ** 2)
     boat["dock_slot"] = slot
     return slot
+
+
+def get_nearest_dock_queue_point(boat_rect: pygame.Rect, spots: list[dict[str, float]]) -> tuple[int, int]:
+    if not spots:
+        return BASE_RECT.left - 80, BASE_RECT.centery
+
+    bx, by = boat_rect.center
+    nearest = min(spots, key=lambda spot: (spot["x"] - bx) ** 2 + (spot["y"] - by) ** 2)
+    dx = nearest["x"] - BASE_RECT.centerx
+    dy = nearest["y"] - BASE_RECT.centery
+    margin = 84
+
+    if abs(dx) >= abs(dy):
+        qx = BASE_RECT.left - margin if dx < 0 else BASE_RECT.right + margin
+        qy = int(max(BASE_RECT.top - margin, min(BASE_RECT.bottom + margin, by)))
+    else:
+        qx = int(max(BASE_RECT.left - margin, min(BASE_RECT.right + margin, bx)))
+        qy = BASE_RECT.top - margin if dy < 0 else BASE_RECT.bottom + margin
+
+    return int(qx), int(qy)
+
+
+def move_boat_toward_dock_spot(
+    boat_rect: pygame.Rect,
+    spot: dict[str, float],
+    dt: float,
+    speed: float,
+) -> tuple[bool, float, float]:
+    target_x = int(spot["x"])
+    target_y = int(spot["y"])
+    no_go = BASE_RECT.inflate(44, 44)
+
+    if no_go.clipline(boat_rect.center, (target_x, target_y)):
+        margin = 92
+        tx = float(target_x)
+        ty = float(target_y)
+
+        if tx < BASE_RECT.left:
+            waypoint = (BASE_RECT.left - margin, int(max(BASE_RECT.top - margin, min(BASE_RECT.bottom + margin, boat_rect.centery))))
+        elif ty < BASE_RECT.top:
+            waypoint = (int(max(BASE_RECT.left - margin, min(BASE_RECT.right + margin, boat_rect.centerx))), BASE_RECT.top - margin)
+        elif ty > BASE_RECT.bottom:
+            waypoint = (int(max(BASE_RECT.left - margin, min(BASE_RECT.right + margin, boat_rect.centerx))), BASE_RECT.bottom + margin)
+        else:
+            waypoint = (BASE_RECT.left - margin, BASE_RECT.centery)
+
+        reached_wp, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(waypoint[0]), int(waypoint[1]), dt, speed)
+        if not reached_wp:
+            return False, move_dx, move_dy
+
+    return move_boat_toward_point_speed(boat_rect, target_x, target_y, dt, speed)
 
 
 def maybe_spawn_wake(
@@ -1251,12 +1363,16 @@ async def run_game() -> None:
     pygame.display.set_caption("MVHacks - Cleanup Fleet")
     clock = pygame.time.Clock()
 
-    captain_name = play_intro(screen, clock)
-    if captain_name is None:
-        pygame.quit()
-        return
+    if SKIP_INTRO_FOR_TESTING:
+        captain_name = "Captain"
+        intro_fade_alpha = 0.0
+    else:
+        captain_name = await play_intro(screen, clock)
+        if captain_name is None:
+            pygame.quit()
+            return
+        intro_fade_alpha = 255.0
 
-    intro_fade_alpha = 255.0
     company_name = f"{captain_name}'s Ocean Cleanup Co."
 
     body_font = pygame.font.SysFont("Courier New", 18, bold=True)
@@ -1426,6 +1542,7 @@ async def run_game() -> None:
                         boat["refuel_lock"] = True
                         boat["mode"] = requested_mode
                         boat["sell_phase"] = "idle"
+                        boat["dock_slot"] = None
                         boat["visible"] = True
                         label = "Return" if requested_mode == MODE_STOP else requested_mode.title()
                         add_log(f"Boat {boat_id} command queued: {label} (refuel first)")
@@ -1508,6 +1625,7 @@ async def run_game() -> None:
             refuel_lock_active = bool(boat["refuel_lock"])
             dock_slot = boat.get("dock_slot") if isinstance(boat.get("dock_slot"), int) else None
             docked = False
+            dock_spots = get_barge_dock_spots(mothership_sprite)
 
             move_dx = 0.0
             move_dy = 0.0
@@ -1529,15 +1647,15 @@ async def run_game() -> None:
             elif refuel_lock_active:
                 boat_visible = True
                 sell_phase = "idle"
-                slot = get_or_assign_dock_slot(boat, boats)
+                slot = get_or_assign_dock_slot(boat, boats, dock_spots)
                 mode_label = "Return" if pending_mode == MODE_STOP else pending_mode.title()
 
                 if slot is None:
-                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, *get_nearest_dock_queue_point(boat_rect, dock_spots), dt, boat_speed)
                     boat_status = f"Command {mode_label}: waiting dock slot"
                 else:
-                    spot = get_barge_dock_spots()[slot]
-                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                    spot = dock_spots[slot]
+                    at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
                     if at_base:
                         docked = True
                         facing_angle = float(spot["angle"])
@@ -1585,6 +1703,7 @@ async def run_game() -> None:
 
                     if fuel_seconds <= fuel_needed_to_barge:
                         boat_state = STATE_RETURNING
+                        boat["dock_slot"] = None
                         boat_status = "Returning To Base (fuel reserve)"
                     else:
                         boat["dock_slot"] = None
@@ -1602,18 +1721,19 @@ async def run_game() -> None:
                                 collected_total += newly_collected
                         else:
                             boat_state = STATE_RETURNING
+                            boat["dock_slot"] = None
                             boat_status = "Returning To Base (cargo full)"
 
                 elif boat_state == STATE_RETURNING:
                     returning_count += 1
                     boat_status = "Returning To Base"
-                    slot = get_or_assign_dock_slot(boat, boats)
+                    slot = get_or_assign_dock_slot(boat, boats, dock_spots)
                     if slot is None:
-                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, *get_nearest_dock_queue_point(boat_rect, dock_spots), dt, boat_speed)
                         boat_status = "Waiting dock slot"
                     else:
-                        spot = get_barge_dock_spots()[slot]
-                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                        spot = dock_spots[slot]
+                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
                         if at_base:
                             docked = True
                             facing_angle = float(spot["angle"])
@@ -1651,13 +1771,13 @@ async def run_game() -> None:
             elif boat_mode == MODE_STOP:
                 boat_visible = True
                 sell_phase = "idle"
-                slot = get_or_assign_dock_slot(boat, boats)
+                slot = get_or_assign_dock_slot(boat, boats, dock_spots)
                 if slot is None:
-                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, *get_nearest_dock_queue_point(boat_rect, dock_spots), dt, boat_speed)
                     boat_status = "Waiting dock slot"
                 else:
-                    spot = get_barge_dock_spots()[slot]
-                    at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                    spot = dock_spots[slot]
+                    at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
                     if at_base:
                         docked = True
                         facing_angle = float(spot["angle"])
@@ -1668,13 +1788,13 @@ async def run_game() -> None:
                 refuel_seconds_left = 0.0
 
                 if sell_phase == "idle":
-                    slot = get_or_assign_dock_slot(boat, boats)
+                    slot = get_or_assign_dock_slot(boat, boats, dock_spots)
                     if slot is None:
-                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, *get_nearest_dock_queue_point(boat_rect, dock_spots), dt, boat_speed)
                         boat_status = "Sell mode: waiting dock slot"
                     else:
-                        spot = get_barge_dock_spots()[slot]
-                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                        spot = dock_spots[slot]
+                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
                         if at_base:
                             docked = True
                             facing_angle = float(spot["angle"])
@@ -1731,13 +1851,13 @@ async def run_game() -> None:
 
                 elif sell_phase == "to_base":
                     boat_status = "Returning from sale"
-                    slot = get_or_assign_dock_slot(boat, boats)
+                    slot = get_or_assign_dock_slot(boat, boats, dock_spots)
                     if slot is None:
-                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, BASE_RECT.centerx, BASE_RECT.bottom + 120, dt, boat_speed)
+                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, *get_nearest_dock_queue_point(boat_rect, dock_spots), dt, boat_speed)
                         boat_status = "Returning from sale (queue)"
                     else:
-                        spot = get_barge_dock_spots()[slot]
-                        at_base, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(spot["x"]), int(spot["y"]), dt, boat_speed)
+                        spot = dock_spots[slot]
+                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
                         if at_base:
                             docked = True
                             facing_angle = float(spot["angle"])
@@ -1771,6 +1891,8 @@ async def run_game() -> None:
             if math.hypot(move_dx, move_dy) > 1e-3:
                 fuel_seconds = max(0.0, fuel_seconds - dt)
 
+            keep_boat_out_of_barge(boat_rect)
+
             if abs(move_dx) > 1e-4 or abs(move_dy) > 1e-4:
                 facing_angle = math.degrees(math.atan2(move_dy, move_dx))
                 maybe_spawn_wake(wake_particles, boat_rect, move_dx, move_dy, dt)
@@ -1791,7 +1913,7 @@ async def run_game() -> None:
             boat["pending_sale_units"] = pending_sale_units
             boat["status"] = boat_status
             boat["refuel_lock"] = refuel_lock_active
-            boat["dock_slot"] = dock_slot if isinstance(boat.get("dock_slot"), int) else boat.get("dock_slot")
+            boat["dock_slot"] = boat.get("dock_slot") if isinstance(boat.get("dock_slot"), int) else None
             boat["docked"] = docked
 
             fleet_boats.append({
@@ -1854,8 +1976,6 @@ async def run_game() -> None:
         for p in wake_particles:
             p.draw(screen, camera_x, camera_y)
 
-        draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite)
-
         for boat in boats:
             if not bool(boat["visible"]):
                 continue
@@ -1870,6 +1990,8 @@ async def run_game() -> None:
                 float(boat["facing_angle"]),
                 boat_type,
             )
+
+        draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite)
 
         draw_offscreen_target_indicator(
             screen,
@@ -1949,7 +2071,10 @@ async def main() -> None:
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        if sys.platform == "emscripten":
+            asyncio.ensure_future(main())
+        else:
+            asyncio.run(main())
     except KeyboardInterrupt:
         pygame.quit()
         sys.exit(0)
