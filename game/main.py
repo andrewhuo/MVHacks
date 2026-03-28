@@ -44,10 +44,10 @@ REFUEL_SECONDS = 2.0
 BASE_RECT = pygame.Rect(32, 32, 220, 130)
 
 # Assets
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-OCEAN_TILE_PATH = PROJECT_ROOT / "assets" / "ocean.jpeg"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+OCEAN_TILE_PATH = ASSETS_DIR / "ocean.jpeg"
 OCEAN_TILE_SCALE = 0.4
-BOAT_SPRITE_PATH = PROJECT_ROOT / "assets" / "smallboat.png"
+BOAT_SPRITE_PATH = ASSETS_DIR / "smallboat.png"
 BOAT_SPRITE_SCALE = 1.0
 BOAT_SPRITE_ANGLE_OFFSET = 0.0  # adjust if sprite's default facing is not rightward
 
@@ -66,11 +66,9 @@ FUEL_FILL = (102, 221, 132)
 FUEL_LOW = (241, 118, 104)
 FALLBACK_OCEAN_TOP = (25, 110, 184)
 FALLBACK_OCEAN_BOTTOM = (16, 69, 132)
-TRASH_COLORS = [
-    (230, 232, 238),
-    (177, 201, 218),
-    (206, 220, 230),
-]
+TRASH_SPRITE_PATTERNS = ("bottle*.png", "bag*.png")
+TRASH_SPRITE_SCALE = 0.6
+FALLBACK_TRASH_COLOR = (210, 228, 236)
 
 STATE_COLLECTING = "collecting"
 STATE_RETURNING = "returning"
@@ -120,6 +118,20 @@ def load_boat_sprite() -> pygame.Surface | None:
         return None
 
 
+def load_trash_sprites() -> list[pygame.Surface]:
+    sprites: list[pygame.Surface] = []
+    for pattern in TRASH_SPRITE_PATTERNS:
+        for path in sorted(ASSETS_DIR.glob(pattern)):
+            try:
+                sprite = pygame.image.load(str(path)).convert_alpha()
+                scaled_w = max(6, int(sprite.get_width() * TRASH_SPRITE_SCALE))
+                scaled_h = max(6, int(sprite.get_height() * TRASH_SPRITE_SCALE))
+                sprites.append(pygame.transform.scale(sprite, (scaled_w, scaled_h)))
+            except pygame.error:
+                continue
+    return sprites
+
+
 def quantize_angle_to_8(angle_degrees: float) -> float:
     """Quantize angle to 8 directions (every 45 degrees)."""
     return round(angle_degrees / 45.0) * 45.0
@@ -139,29 +151,37 @@ def draw_fallback_ocean_gradient(surface: pygame.Surface) -> None:
 
 
 class TrashItem:
-    def __init__(self) -> None:
-        self.size = random.randint(7, 12)
-        self.shape = random.choice(["circle", "square"])
-        self.color = random.choice(TRASH_COLORS)
+    def __init__(self, sprite: pygame.Surface | None) -> None:
+        self.sprite = pygame.transform.rotate(sprite, random.uniform(0.0, 360.0)) if sprite is not None else None
+        if self.sprite is not None:
+            self.width = self.sprite.get_width()
+            self.height = self.sprite.get_height()
+            self.size = max(self.width, self.height)
+        else:
+            self.size = random.randint(7, 12)
+            self.width = self.size
+            self.height = self.size
+
         self.score = random.choice([8, 10, 12, 15])
 
         while True:
             self.x = random.randint(24, WORLD_RECT.width - 24)
             self.y = random.randint(24, WORLD_RECT.height - 24)
-            item_rect = pygame.Rect(self.x - self.size // 2, self.y - self.size // 2, self.size, self.size)
+            item_rect = pygame.Rect(self.x - self.width // 2, self.y - self.height // 2, self.width, self.height)
             if not item_rect.colliderect(BASE_RECT.inflate(30, 30)):
                 break
 
     def draw(self, surface: pygame.Surface, camera_x: float, camera_y: float) -> None:
         sx, sy = world_to_screen(self.x, self.y, camera_x, camera_y)
-        if self.shape == "circle":
-            pygame.draw.circle(surface, self.color, (sx, sy), self.size // 2)
+        if self.sprite is not None:
+            rect = self.sprite.get_rect(center=(sx, sy))
+            surface.blit(self.sprite, rect)
         else:
             rect = pygame.Rect(sx - self.size // 2, sy - self.size // 2, self.size, self.size)
-            pygame.draw.rect(surface, self.color, rect, border_radius=2)
+            pygame.draw.rect(surface, FALLBACK_TRASH_COLOR, rect, border_radius=2)
 
     def collides_with_boat(self, boat_rect: pygame.Rect) -> bool:
-        item_rect = pygame.Rect(self.x - self.size // 2, self.y - self.size // 2, self.size, self.size)
+        item_rect = pygame.Rect(self.x - self.width // 2, self.y - self.height // 2, self.width, self.height)
         return boat_rect.colliderect(item_rect)
 
 
@@ -397,9 +417,10 @@ async def run_game() -> None:
 
     ocean_tile = load_ocean_tile()
     boat_sprite = load_boat_sprite()
+    trash_sprites = load_trash_sprites()
 
     boat_rect = pygame.Rect(BASE_RECT.centerx + 20, BASE_RECT.centery + 6, BOAT_SIZE[0], BOAT_SIZE[1])
-    trash_items = [TrashItem() for _ in range(STARTING_TRASH_COUNT)]
+    trash_items = [TrashItem(random.choice(trash_sprites) if trash_sprites else None) for _ in range(STARTING_TRASH_COUNT)]
     wake_particles: list[WakeParticle] = []
 
     trash_collected = 0

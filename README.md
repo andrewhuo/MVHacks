@@ -28,7 +28,7 @@ python3 game/main.py
 ## Current Behavior
 
 - Left sidebar HUD (no longer covers map/base ship)
-- Ocean is tiled from `assets/ocean.jpeg`
+- Ocean is tiled from `game/assets/ocean.jpeg`
 - Large world map with more trash
 - A large base ship sits in the top-left world corner
 - Small collection boat has 10 seconds of fuel
