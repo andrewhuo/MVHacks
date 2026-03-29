@@ -27,13 +27,31 @@ except ImportError:
     from intro import play_intro
 
 try:
-    from .services import generate_ocean_cleanup_quiz_async, generate_ocean_fact_async
+    from .services import (
+        generate_ocean_cleanup_quiz_async,
+        generate_ocean_fact_async,
+        generate_ocean_tip_async,
+        choose_fallback_quiz,
+        choose_fallback_fact,
+        choose_fallback_tip,
+    )
 except ImportError:
     try:
-        from services import generate_ocean_cleanup_quiz_async, generate_ocean_fact_async
+        from services import (
+            generate_ocean_cleanup_quiz_async,
+            generate_ocean_fact_async,
+            generate_ocean_tip_async,
+            choose_fallback_quiz,
+            choose_fallback_fact,
+            choose_fallback_tip,
+        )
     except ImportError:
         generate_ocean_cleanup_quiz_async = None
         generate_ocean_fact_async = None
+        generate_ocean_tip_async = None
+        choose_fallback_quiz = None
+        choose_fallback_fact = None
+        choose_fallback_tip = None
 
 
 # Window layout
@@ -63,12 +81,16 @@ MAX_TRASH_ITEMS = 700
 OFFSCREEN_SPAWN_INTERVAL = 1.15
 OFFSCREEN_PATCH_MIN = 8
 OFFSCREEN_PATCH_MAX = 18
-EDUCATION_PROMPT_INTERVAL_SECONDS = 60.0
+EDUCATION_PROMPT_INTERVAL_SECONDS = 30.0
+DONATION_MIN_INTERVAL = 48.0
+DONATION_MAX_INTERVAL = 92.0
+DONATION_MIN_AMOUNT = 260
+DONATION_MAX_AMOUNT = 1150
 MAX_FUEL_SECONDS = 20.0
 REFUEL_SECONDS = 2.0
 MIN_REFUEL_SECONDS = 1.5
 BARGE_FUEL_CAPACITY = 1800.0
-BARGE_FUEL_START = 1100.0
+BARGE_FUEL_START = BARGE_FUEL_CAPACITY
 BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC = 6.0
 BARGE_FUEL_BUY_PRICE = 1.6
 HEAVY_SELL_FUEL_REBUY_UNITS = 240.0
@@ -107,7 +129,14 @@ BOAT_GUIDE_PATH_BY_TYPE = {
 }
 MOTHERSHIP_GUIDE_PATH = ASSETS_DIR / "mothership_guide.png"
 BOAT_SPRITE_SCALE = 1.0 * WORLD_ENTITY_SCALE
-BOAT_SPRITE_ANGLE_OFFSET = 90.0  # sprite defaults to facing up; offset aligns it to movement
+BOAT_SPRITE_ANGLE_OFFSET = 90.0  # default offset
+BOAT_SPRITE_ANGLE_OFFSET_BY_TYPE = {
+    "Speedboat": 90.0,
+    "Sailboat": 90.0,
+    "Tugboat": 90.0,
+    "Hoverboat": 90.0,
+    "Heavy Boat": 0.0,
+}
 SPEEDBOAT_DIRECT_SCALE = 1.12
 MOTHERSHIP_SPRITE_PATH = ASSETS_DIR / "mothership.png"
 MOTHERSHIP_SPRITE_SCALE = 0.90 * WORLD_ENTITY_SCALE
@@ -152,9 +181,12 @@ PLASTIC_SELL_PRICE = 2.4
 BARGE_TRASH_CAPACITY = 220
 BARGE_TRIP_SPEED = 175.0
 BARGE_SELL_TIME = 2.4
+HEAVY_TRANSPORT_SPEED = 150.0
+HEAVY_TRANSPORT_DOCK_TIME = 1.4
 BARGE_FUEL_RESTOCK_UNITS = 280.0
 BARGE_MIN_SELL_PRICE_PER_UNIT = 3.2
 BARGE_RESTOCK_BUDGET_RATIO = 0.30
+TRANSPORTER_FUEL_BUY_UNITS = 420.0
 
 BOAT_TYPE = "Speedboat"
 # Real-world inspired references (scaled down for gameplay):
@@ -903,7 +935,12 @@ def draw_boat(
         pygame.draw.polygon(surface, BOAT_OUTLINE, prow, width=2)
         return
 
-    snapped_angle = quantize_angle_to_8(facing_angle_degrees + BOAT_SPRITE_ANGLE_OFFSET)
+    angle_offset = BOAT_SPRITE_ANGLE_OFFSET_BY_TYPE.get(boat_type or "", BOAT_SPRITE_ANGLE_OFFSET)
+    draw_angle = facing_angle_degrees + angle_offset
+    if boat_type == "Heavy Boat":
+        snapped_angle = draw_angle
+    else:
+        snapped_angle = quantize_angle_to_8(draw_angle)
     rotated = pygame.transform.rotate(boat_sprite, -snapped_angle)
     rot_rect = rotated.get_rect(center=boat_screen.center)
     surface.blit(rotated, rot_rect)
@@ -936,7 +973,6 @@ def draw_sidebar(
     fame: float,
     crew_total: int,
     crew_available: int,
-    morale: float,
     trash_stored: int,
     recycling_inventory: int,
     barge_fuel_storage: float,
@@ -1027,12 +1063,12 @@ def draw_sidebar(
         pygame.draw.rect(content, card_colors[idx % len(card_colors)], rect)
         pygame.draw.rect(content, border, rect, width=2)
 
-        title_surf = body_font.render(title, True, TEXT_COLOR)
+        title_surf = body_font.render(title, False, TEXT_COLOR)
         content.blit(title_surf, (10, y + 8))
 
         ly = y + 30
         for line in wrapped_lines:
-            surf = body_font.render(line, True, MUTED_TEXT)
+            surf = body_font.render(line, False, MUTED_TEXT)
             content.blit(surf, (12, ly))
             ly += 20
         return y + h + 10, rect
@@ -1054,18 +1090,46 @@ def draw_sidebar(
         f"Ops Spend/min: ${total_cost_per_min:.1f}",
         f"Fuel Spend/min: ${fuel_cost_per_min:.1f}",
         f"Barge Fuel: {int(barge_fuel_storage)}/{int(barge_fuel_capacity)}",
-        f"Trip Status: {barge_trip_phase.title()}",
+        ".",
+        ".",
     ], 1)
 
-    sell_btn = pygame.Rect(content_w - 110, barge_card_rect.bottom - 30, 96, 20)
     sell_enabled = (barge_trip_phase == "idle") and (recycling_inventory > 0)
-    btn_fill = (102, 75, 50) if sell_enabled else (86, 68, 49)
-    btn_border = (154, 122, 86) if sell_enabled else (122, 96, 70)
-    txt_color = (255, 255, 255) if sell_enabled else (200, 188, 170)
-    pygame.draw.rect(content, btn_fill, sell_btn)
-    pygame.draw.rect(content, btn_border, sell_btn, width=1)
-    sell_lbl = body_font.render("Sell Trash", True, txt_color)
-    content.blit(sell_lbl, (sell_btn.x + 8, sell_btn.y + 2))
+    fuel_room = max(0.0, barge_fuel_capacity - barge_fuel_storage)
+    buy_enabled = (barge_trip_phase == "idle") and (fuel_room > 2.0)
+
+    btn_h = 20
+    row_gap = 6
+
+    sell_txt = body_font.render("Sell Trash", False, (255, 255, 255))
+    buy_txt = body_font.render("Buy Fuel", False, (255, 255, 255))
+    btn_w = min(content_w - 22, max(sell_txt.get_width(), buy_txt.get_width()) + 26)
+    # Left-side aligned and moved slightly lower to avoid overlap glitches.
+    btn_x = barge_card_rect.x + 12
+
+    buy_y = barge_card_rect.bottom - (btn_h * 2 + row_gap + 4) + 5
+    sell_y = buy_y + btn_h + row_gap
+
+    buy_btn = pygame.Rect(btn_x, buy_y, btn_w, btn_h)
+    sell_btn = pygame.Rect(btn_x, sell_y, btn_w, btn_h)
+
+    buy_fill = (102, 75, 50) if buy_enabled else (86, 68, 49)
+    buy_border = (154, 122, 86) if buy_enabled else (122, 96, 70)
+    buy_color = (255, 255, 255) if buy_enabled else (200, 188, 170)
+    pygame.draw.rect(content, buy_fill, buy_btn)
+    pygame.draw.rect(content, buy_border, buy_btn, width=1)
+    buy_lbl = body_font.render("Buy Fuel", False, buy_color)
+    content.blit(buy_lbl, (buy_btn.x + (buy_btn.width - buy_lbl.get_width()) // 2, buy_btn.y + 2))
+    if buy_enabled:
+        mode_buttons_content["barge:buyfuel"] = buy_btn
+
+    sell_fill = (102, 75, 50) if sell_enabled else (86, 68, 49)
+    sell_border = (154, 122, 86) if sell_enabled else (122, 96, 70)
+    sell_color = (255, 255, 255) if sell_enabled else (200, 188, 170)
+    sell_lbl = body_font.render("Sell Trash", False, sell_color)
+    pygame.draw.rect(content, sell_fill, sell_btn)
+    pygame.draw.rect(content, sell_border, sell_btn, width=1)
+    content.blit(sell_lbl, (sell_btn.x + (sell_btn.width - sell_lbl.get_width()) // 2, sell_btn.y + 2))
     if sell_enabled:
         mode_buttons_content["barge:selltrash"] = sell_btn
 
@@ -1085,7 +1149,7 @@ def draw_sidebar(
     fleet_rect = pygame.Rect(0, fleet_top, content_w, fleet_h)
     pygame.draw.rect(content, card_colors[2], fleet_rect)
     pygame.draw.rect(content, border, fleet_rect, width=2)
-    fleet_title = body_font.render("Fleet", True, TEXT_COLOR)
+    fleet_title = body_font.render("Fleet", False, TEXT_COLOR)
     content.blit(fleet_title, (10, fleet_top + 8))
 
     for i, boat in enumerate(fleet_boats):
@@ -1102,8 +1166,7 @@ def draw_sidebar(
         crew_min = int(boat.get("crew_min", 0))
         crew_max = int(boat.get("crew_max", crew_min))
 
-        actions = [("collect", "C"), ("sell", "S"), ("return", "R")]
-        can_sell = boat_type == "Heavy Boat"
+        actions = [("collect", "C"), ("return", "R")]
         at_barge_for_crew = bool(boat.get("docked", False))
         btn_w = 24
         btn_h = 20
@@ -1114,10 +1177,10 @@ def draw_sidebar(
         crew_w = len(crew_btns) * (crew_btn_w + crew_gap)
         start_x = row_rect.right - action_w - crew_w - 12
 
-        name_surf = body_font.render(f"B{boat_id} {boat_type}", True, (255, 255, 255))
+        name_surf = body_font.render(f"B{boat_id} {boat_type}", False, (255, 255, 255))
         content.blit(name_surf, (row_rect.x + 6, row_rect.y + 3))
 
-        crew_surf = body_font.render(f"Crew {crew_assigned} [{crew_min}-{crew_max}]", True, (240, 232, 220))
+        crew_surf = body_font.render(f"Crew {crew_assigned} [{crew_min}-{crew_max}]", False, (240, 232, 220))
         content.blit(crew_surf, (row_rect.x + 6, row_rect.y + 20))
 
         # Controls stay beside the boat row header, not below it.
@@ -1133,7 +1196,7 @@ def draw_sidebar(
             txt_color = (255, 255, 255) if at_barge_for_crew else (200, 188, 170)
             pygame.draw.rect(content, crew_fill, brect)
             pygame.draw.rect(content, crew_outline, brect, width=1)
-            txt = body_font.render(short, True, txt_color)
+            txt = body_font.render(short, False, txt_color)
             content.blit(txt, (brect.x + 5, brect.y + 2))
             if at_barge_for_crew:
                 mode_buttons_content[f"{boat_id}:{action}"] = brect
@@ -1143,7 +1206,7 @@ def draw_sidebar(
             bx = action_start_x + j * (btn_w + 4)
             by = controls_y
             brect = pygame.Rect(bx, by, btn_w, btn_h)
-            enabled = not (action == "sell" and not can_sell)
+            enabled = True
             selected = ((mode == MODE_COLLECT and action == "collect") or (mode == MODE_SELL and action == "sell") or (mode == MODE_STOP and action == "return")) and enabled
             if enabled:
                 fill = (213, 177, 126) if selected else (102, 75, 50)
@@ -1155,7 +1218,7 @@ def draw_sidebar(
                 txt_color = (200, 188, 170)
             pygame.draw.rect(content, fill, brect)
             pygame.draw.rect(content, outline, brect, width=1)
-            txt = body_font.render(short, True, txt_color)
+            txt = body_font.render(short, False, txt_color)
             content.blit(txt, (brect.x + 6, brect.y + 2))
             if enabled:
                 mode_buttons_content[f"{boat_id}:{action}"] = brect
@@ -1163,7 +1226,7 @@ def draw_sidebar(
         text_max_w = max(30, start_x - (row_rect.x + 8) - 8)
         status_lines = wrap_line(status, text_max_w)[:2]
         for s_idx, s_line in enumerate(status_lines):
-            status_surf = body_font.render(s_line, True, (240, 232, 220))
+            status_surf = body_font.render(s_line, False, (240, 232, 220))
             content.blit(status_surf, (row_rect.x + 6, row_rect.y + 47 + s_idx * 16))
 
         if i < row_count - 1:
@@ -1201,24 +1264,24 @@ def draw_sidebar(
         pygame.draw.rect(content, card_colors[(i + 1) % len(card_colors)], detail_rect)
         pygame.draw.rect(content, border, detail_rect, width=2)
 
-        title = body_font.render(f"Boat {boat_id} Panel", True, TEXT_COLOR)
+        title = body_font.render(f"Boat {boat_id} Panel", False, TEXT_COLOR)
         content.blit(title, (10, y + 8))
 
         ty = y + 30
-        l1 = body_font.render(f"Type: {boat_type}", True, MUTED_TEXT)
-        l3 = body_font.render(f"Crew: {crew_assigned} (min {crew_min}, max {crew_max})", True, MUTED_TEXT)
+        l1 = body_font.render(f"Type: {boat_type}", False, MUTED_TEXT)
+        l3 = body_font.render(f"Crew: {crew_assigned} (min {crew_min}, max {crew_max})", False, MUTED_TEXT)
         content.blit(l1, (10, ty))
         ty += 18
         content.blit(l3, (10, ty))
         ty += 18
 
         for line in status_lines:
-            surf = body_font.render(line, True, MUTED_TEXT)
+            surf = body_font.render(line, False, MUTED_TEXT)
             content.blit(surf, (10, ty))
             ty += 18
 
         for line in trash_lines:
-            surf = body_font.render(line, True, MUTED_TEXT)
+            surf = body_font.render(line, False, MUTED_TEXT)
             content.blit(surf, (10, ty))
             ty += 18
 
@@ -1241,11 +1304,6 @@ def draw_sidebar(
         pygame.draw.rect(content, (210, 180, 140), (bar_x, bar_y, bar_w, bar_h), width=1)
 
         y += detail_h + 10
-
-    y, _ = draw_card(y, "Crew", [
-        f"Morale: {morale:.1f}%",
-        "Hiring panel next",
-    ], 3)
 
     y, _ = draw_card(y, "Costs", [
         f"Manpower/min: ${manpower_cost_per_min:.1f}",
@@ -1553,11 +1611,17 @@ def wrap_lines(font: pygame.font.Font, text: str, max_width: int) -> list[str]:
     return lines
 
 
-async def fetch_random_education_prompt() -> dict[str, object]:
-    use_quiz = random.random() < 0.5
+async def fetch_random_education_prompt(
+    previous_fact: str = "",
+    previous_fallback_fact: str = "",
+    previous_fallback_quiz_key: str = "",
+    previous_tip: str = "",
+    previous_fallback_tip: str = "",
+) -> dict[str, object]:
+    mode = random.choice(["quiz", "fact", "tip"])
 
-    if use_quiz and callable(generate_ocean_cleanup_quiz_async):
-        q_count = random.randint(2, 3)
+    if mode == "quiz" and callable(generate_ocean_cleanup_quiz_async):
+        q_count = 1
         try:
             questions = await generate_ocean_cleanup_quiz_async(q_count)
         except Exception:
@@ -1574,7 +1638,7 @@ async def fetch_random_education_prompt() -> dict[str, object]:
             if question and len(options) == 4 and correct in {"A", "B", "C", "D"}:
                 cleaned.append({"question": question, "options": options, "correct": correct})
 
-        if len(cleaned) >= 2:
+        if len(cleaned) >= 1:
             return {
                 "kind": "quiz",
                 "title": "Ocean Knowledge Check",
@@ -1582,19 +1646,71 @@ async def fetch_random_education_prompt() -> dict[str, object]:
                 "selected": [None for _ in cleaned],
                 "submitted": False,
                 "score": 0,
+                "_fallback_fact": "",
+                "_fallback_quiz_key": "",
+                "_fallback_tip": "",
             }
+
+        if callable(choose_fallback_quiz):
+            cleaned_fb, key = choose_fallback_quiz(1, previous_fallback_quiz_key)
+            return {
+                "kind": "quiz",
+                "title": "Ocean Knowledge Check",
+                "questions": cleaned_fb[:1],
+                "selected": [None for _ in cleaned_fb[:1]],
+                "submitted": False,
+                "score": 0,
+                "_fallback_fact": "",
+                "_fallback_quiz_key": key,
+                "_fallback_tip": "",
+            }
+
+    if mode == "tip":
+        tip_text = ""
+        if callable(generate_ocean_tip_async):
+            try:
+                tip_text = (await generate_ocean_tip_async(previous_tip)).strip()
+            except Exception:
+                tip_text = ""
+
+        fallback_tip_used = ""
+        if not tip_text and callable(choose_fallback_tip):
+            tip_text, fallback_tip_used = choose_fallback_tip(previous_fallback_tip, previous_tip)
+
+        if not tip_text:
+            tip_text = "Use reusables and pick up litter before it reaches drains."
+
+        return {
+            "kind": "tip",
+            "title": "Ocean Action Tip",
+            "text": tip_text,
+            "_fallback_fact": "",
+            "_fallback_quiz_key": "",
+            "_fallback_tip": fallback_tip_used,
+        }
 
     fact_text = ""
     if callable(generate_ocean_fact_async):
         try:
-            fact_text = (await generate_ocean_fact_async()).strip()
+            fact_text = (await generate_ocean_fact_async(previous_fact)).strip()
         except Exception:
             fact_text = ""
 
-    if not fact_text:
-        fact_text = "Plastic can persist in the ocean for decades, breaking into microplastics that harm marine food chains."
+    fact_fallback_used = ""
+    if not fact_text and callable(choose_fallback_fact):
+        fact_text, fact_fallback_used = choose_fallback_fact(previous_fallback_fact, previous_fact)
 
-    return {"kind": "fact", "title": "Ocean Fact", "text": fact_text}
+    if not fact_text:
+        fact_text = "Small cleanup actions add up and protect marine habitats over time."
+
+    return {
+        "kind": "fact",
+        "title": "Ocean Fact",
+        "text": fact_text,
+        "_fallback_fact": fact_fallback_used,
+        "_fallback_quiz_key": "",
+        "_fallback_tip": "",
+    }
 
 
 def draw_education_modal(
@@ -1624,7 +1740,7 @@ def draw_education_modal(
 
     title_font = pygame.font.SysFont("Courier New", 24, bold=True)
     title = str(modal.get("title", "Ocean Prompt"))
-    t_surf = title_font.render(title, True, (255, 255, 255))
+    t_surf = title_font.render(title, False, (255, 255, 255))
     surface.blit(t_surf, (modal_rect.x + 18, modal_rect.y + 14))
 
     y = modal_rect.y + 58
@@ -1647,7 +1763,7 @@ def draw_education_modal(
             q_text = str(q.get("question", "")).strip()
             q_lines = wrap_lines(body_font, f"{qi + 1}. {q_text}", modal_rect.width - 40)[:2]
             for line in q_lines:
-                line_surf = body_font.render(line, True, (255, 255, 255))
+                line_surf = body_font.render(line, False, (255, 255, 255))
                 surface.blit(line_surf, (modal_rect.x + 18, y))
                 y += 22
 
@@ -1668,7 +1784,7 @@ def draw_education_modal(
                 bg = (218, 185, 130) if chosen else (158, 121, 80)
                 pygame.draw.rect(surface, bg, brect, border_radius=5)
                 pygame.draw.rect(surface, (92, 67, 42), brect, width=2, border_radius=5)
-                txt = body_font.render(f"{letter}) {str(opt)}", True, (255, 255, 255))
+                txt = body_font.render(f"{letter}) {str(opt)}", False, (255, 255, 255))
                 surface.blit(txt, (brect.x + 8, brect.y + 5))
                 button_rects[f"q{qi}:{letter}"] = brect
 
@@ -1678,20 +1794,20 @@ def draw_education_modal(
         if submitted:
             score = int(modal.get("score", 0))
             total = len(questions)
-            result = body_font.render(f"Score: {score}/{total}", True, (255, 255, 255))
+            result = body_font.render(f"Score: {score}/{total}", False, (255, 255, 255))
             surface.blit(result, (modal_rect.x + 18, modal_rect.bottom - 78))
 
             done_rect = pygame.Rect(modal_rect.right - 130, modal_rect.bottom - 46, 104, 30)
             pygame.draw.rect(surface, (99, 152, 95), done_rect, border_radius=5)
             pygame.draw.rect(surface, (58, 91, 54), done_rect, width=2, border_radius=5)
-            done_lbl = body_font.render("Done", True, (255, 255, 255))
+            done_lbl = body_font.render("Done", False, (255, 255, 255))
             surface.blit(done_lbl, (done_rect.x + 28, done_rect.y + 5))
             button_rects["done"] = done_rect
         else:
             submit_rect = pygame.Rect(modal_rect.right - 150, modal_rect.bottom - 46, 124, 30)
             pygame.draw.rect(surface, (209, 178, 120), submit_rect, border_radius=5)
             pygame.draw.rect(surface, (92, 67, 42), submit_rect, width=2, border_radius=5)
-            submit_lbl = body_font.render("Submit Quiz", True, (255, 255, 255))
+            submit_lbl = body_font.render("Submit Quiz", False, (255, 255, 255))
             surface.blit(submit_lbl, (submit_rect.x + 10, submit_rect.y + 5))
             button_rects["submit"] = submit_rect
 
@@ -1699,18 +1815,52 @@ def draw_education_modal(
         fact = str(modal.get("text", ""))
         lines = wrap_lines(body_font, fact, modal_rect.width - 40)
         for line in lines[:14]:
-            line_surf = body_font.render(line, True, (255, 255, 255))
+            line_surf = body_font.render(line, False, (255, 255, 255))
             surface.blit(line_surf, (modal_rect.x + 18, y))
             y += 24
 
         done_rect = pygame.Rect(modal_rect.right - 120, modal_rect.bottom - 46, 94, 30)
         pygame.draw.rect(surface, (99, 152, 95), done_rect, border_radius=5)
         pygame.draw.rect(surface, (58, 91, 54), done_rect, width=2, border_radius=5)
-        done_lbl = body_font.render("Done", True, (255, 255, 255))
+        done_lbl = body_font.render("Done", False, (255, 255, 255))
         surface.blit(done_lbl, (done_rect.x + 22, done_rect.y + 5))
         button_rects["done"] = done_rect
 
     return button_rects
+
+
+def draw_notifications(surface: pygame.Surface, body_font: pygame.font.Font, notices: list[dict[str, object]]) -> None:
+    if not notices:
+        return
+
+    x = VIEWPORT_RECT.x + 28
+    y = 18
+    max_w = min(560, VIEWPORT_RECT.width - 56)
+
+    for notice in notices[:3]:
+        text = str(notice.get("text", "")).strip()
+        if not text:
+            continue
+
+        pad_x = 10
+        pad_y = 7
+        tw, th = body_font.size(text)
+        w = min(max_w, tw + pad_x * 2)
+        h = th + pad_y * 2
+        rect = pygame.Rect(x, y, w, h)
+
+        pygame.draw.rect(surface, (45, 34, 25, 225), rect, border_radius=6)
+        pygame.draw.rect(surface, (214, 186, 138), rect, width=2, border_radius=6)
+
+        label = text
+        if body_font.size(label)[0] > w - pad_x * 2:
+            while label and body_font.size(label + "...")[0] > w - pad_x * 2:
+                label = label[:-1]
+            label = label + "..." if label else text[:16]
+
+        surf = body_font.render(label, False, (255, 255, 255))
+        surface.blit(surf, (rect.x + pad_x, rect.y + pad_y))
+        y += h + 8
 
 
 async def run_game() -> None:
@@ -1731,8 +1881,8 @@ async def run_game() -> None:
 
     company_name = f"{captain_name}'s Ocean Cleanup Co."
 
-    body_font = pygame.font.SysFont("Courier New", 18, bold=True)
-    base_font = pygame.font.SysFont("Courier New", 18, bold=True)
+    body_font = pygame.font.SysFont("Courier New", 20, bold=True)
+    base_font = pygame.font.SysFont("Courier New", 20, bold=True)
 
     ocean_tile = load_ocean_tile()
     boat_sprites = load_boat_sprites()
@@ -1752,7 +1902,6 @@ async def run_game() -> None:
     money = 1200.0
     fame = 8.0
     crew_total = 5
-    morale = 74.0
     manpower_cost_per_min = 24.0
     fuel_cost_per_min = 12.0
     general_cost_per_min = 6.0
@@ -1779,6 +1928,25 @@ async def run_game() -> None:
     education_modal: dict[str, object] | None = None
     education_task: asyncio.Task | None = None
     education_timer = 0.0
+    last_education_fact = ""
+    last_fallback_fact = ""
+    last_fallback_quiz_key = ""
+    last_education_tip = ""
+    last_fallback_tip = ""
+
+    notifications: list[dict[str, object]] = []
+    donation_timer = random.uniform(DONATION_MIN_INTERVAL, DONATION_MAX_INTERVAL)
+    donor_names = [
+        "NOAA Grant Program",
+        "Japan Marine Agency",
+        "EU Ocean Fund",
+        "Australia Reef Council",
+        "Canada Blue Futures",
+        "UN Ocean Action",
+        "Norway Coast Initiative",
+        "South Korea Sea Trust",
+    ]
+
     show_dock_debug = SHOW_DOCK_DEBUG_DEFAULT
 
     offscreen_spawn_timer = 0.0
@@ -1787,13 +1955,41 @@ async def run_game() -> None:
     recycling_stock_value = 0.0
     barge_fuel_storage = BARGE_FUEL_START
 
-    barge_home_center = (BASE_RECT.centerx, BASE_RECT.centery)
     barge_trip_phase = "idle"
     barge_sell_requested = False
-    barge_sell_timer = 0.0
+    barge_buy_fuel_requested = False
     barge_facing_angle = 0.0
-    barge_move_dx = 0.0
-    barge_move_dy = 0.0
+
+    transport_sprite = None
+    if TUGBOAT_SPRITE_PATH.exists():
+        try:
+            tug_raw = pygame.image.load(str(TUGBOAT_SPRITE_PATH)).convert_alpha()
+            tw = max(70, int(tug_raw.get_width() * 1.55))
+            th = max(36, int(tug_raw.get_height() * 1.55))
+            transport_sprite = pygame.transform.scale(tug_raw, (tw, th))
+        except pygame.error:
+            transport_sprite = boat_sprites.get("Tugboat")
+    else:
+        transport_sprite = boat_sprites.get("Tugboat")
+
+    if transport_sprite is not None:
+        hs_w, hs_h = transport_sprite.get_size()
+    else:
+        hs_w, hs_h = BOAT_SIZE_BY_TYPE.get("Tugboat", (64, 32))
+        hs_w = max(hs_w, 44)
+        hs_h = max(hs_h, 24)
+
+    heavy_transport = {
+        "active": False,
+        "visible": False,
+        "phase": "idle",
+        "rect": pygame.Rect(-200, -200, hs_w, hs_h),
+        "entry_vec": (1, 0),
+        "exit_target": (WORLD_WIDTH + 220, WORLD_HEIGHT // 2),
+        "timer": 0.0,
+        "facing_angle": 0.0,
+        "mission": "sell",
+    }
 
     boat_layout = [
         ("Speedboat", (95, -70)),
@@ -1858,6 +2054,30 @@ async def run_game() -> None:
         if len(transactions) > 20:
             transactions = transactions[:20]
 
+    def add_notification(msg: str, ttl: float = 3.8) -> None:
+        notifications.insert(0, {"text": msg, "ttl": max(1.2, ttl)})
+        if len(notifications) > 6:
+            del notifications[6:]
+
+    def random_transport_route() -> tuple[tuple[float, float], tuple[int, int], tuple[int, int]]:
+        dirs = [
+            (-1, -1), (0, -1), (1, -1),
+            (-1, 0),            (1, 0),
+            (-1, 1),  (0, 1),   (1, 1),
+        ]
+        vx, vy = random.choice(dirs)
+        norm = math.hypot(vx, vy)
+        ux = vx / max(1e-6, norm)
+        uy = vy / max(1e-6, norm)
+
+        radius = int(max(WORLD_WIDTH, WORLD_HEIGHT) * 0.75) + 520
+        entry_x = int(BASE_RECT.centerx + ux * radius)
+        entry_y = int(BASE_RECT.centery + uy * radius)
+        exit_x = int(BASE_RECT.centerx - ux * radius)
+        exit_y = int(BASE_RECT.centery - uy * radius)
+
+        return (ux, uy), (entry_x, entry_y), (exit_x, exit_y)
+
     running = True
     while running:
         frame_dt = clock.tick(FPS) / 1000.0
@@ -1919,8 +2139,14 @@ async def run_game() -> None:
 
                         if button_key == "barge:selltrash":
                             barge_sell_requested = True
-                            add_log("Barge sale trip requested")
-                            add_transaction("Barge sale queued")
+                            add_log("Tugboat transport sell requested")
+                            add_transaction("Sell request queued")
+                            break
+
+                        if button_key == "barge:buyfuel":
+                            barge_buy_fuel_requested = True
+                            add_log("Tugboat transport fuel buy requested")
+                            add_transaction("Fuel purchase request queued")
                             break
 
                         try:
@@ -1992,6 +2218,19 @@ async def run_game() -> None:
             try:
                 education_modal = education_task.result()
                 if education_modal:
+                    if str(education_modal.get("kind", "")) == "fact":
+                        last_education_fact = str(education_modal.get("text", "")).strip()
+                    fb_fact = str(education_modal.get("_fallback_fact", "")).strip()
+                    fb_quiz = str(education_modal.get("_fallback_quiz_key", "")).strip()
+                    fb_tip = str(education_modal.get("_fallback_tip", "")).strip()
+                    if fb_fact:
+                        last_fallback_fact = fb_fact
+                    if fb_quiz:
+                        last_fallback_quiz_key = fb_quiz
+                    if fb_tip:
+                        last_fallback_tip = fb_tip
+                    if str(education_modal.get("kind", "")) == "tip":
+                        last_education_tip = str(education_modal.get("text", "")).strip()
                     add_log("Education prompt opened")
             except Exception:
                 education_modal = {
@@ -2005,26 +2244,66 @@ async def run_game() -> None:
             education_timer += frame_dt
             if education_timer >= EDUCATION_PROMPT_INTERVAL_SECONDS:
                 education_timer = 0.0
-                education_task = asyncio.create_task(fetch_random_education_prompt())
+                education_task = asyncio.create_task(
+                    fetch_random_education_prompt(
+                        last_education_fact,
+                        last_fallback_fact,
+                        last_fallback_quiz_key,
+                        last_education_tip,
+                        last_fallback_tip,
+                    )
+                )
                 add_log("Fetching ocean fact/quiz...")
 
         dt = 0.0 if education_modal is not None else frame_dt
         elapsed_seconds += dt
 
-        if barge_trip_phase == "idle" and (barge_sell_requested or recycling_inventory >= BARGE_TRASH_CAPACITY):
-            if recycling_inventory > 0:
-                barge_trip_phase = "recall"
-                barge_sell_requested = False
-                for boat in boats:
-                    boat["pending_mode"] = MODE_STOP
-                    boat["mode"] = MODE_STOP
-                    boat["refuel_lock"] = False
-                    boat["dock_slot"] = None
-                    if str(boat.get("state", STATE_COLLECTING)) == STATE_COLLECTING:
-                        boat["state"] = STATE_RETURNING
-                add_log("Recalling boats to barge for sale trip")
+        donation_timer -= frame_dt
+        if donation_timer <= 0.0:
+            donor = random.choice(donor_names)
+            donation_amount = random.randint(DONATION_MIN_AMOUNT, DONATION_MAX_AMOUNT)
+            money += donation_amount
+            fame = min(100.0, fame + random.uniform(0.15, 0.55))
+            add_transaction(f"{donor} donation +${donation_amount}")
+            add_notification(f"Donation: {donor} +${donation_amount}", ttl=4.5)
+            donation_timer = random.uniform(DONATION_MIN_INTERVAL, DONATION_MAX_INTERVAL)
+
+        # update notification lifetimes
+        alive_notices: list[dict[str, object]] = []
+        for n in notifications:
+            ttl = float(n.get("ttl", 0.0)) - frame_dt
+            if ttl > 0.0:
+                n["ttl"] = ttl
+                alive_notices.append(n)
+        notifications[:] = alive_notices
+
+        if barge_trip_phase == "idle" and (barge_sell_requested or barge_buy_fuel_requested):
+            mission = "sell" if barge_sell_requested else "buy_fuel"
+            barge_sell_requested = False
+            barge_buy_fuel_requested = False
+
+            if mission == "sell" and recycling_inventory <= 0:
+                add_log("No barge trash to sell")
             else:
-                barge_sell_requested = False
+                route_vec, entry_point, exit_point = random_transport_route()
+                transport_rect = heavy_transport["rect"]
+                assert isinstance(transport_rect, pygame.Rect)
+                transport_rect.center = entry_point
+                heavy_transport["entry_vec"] = route_vec
+                heavy_transport["exit_target"] = exit_point
+                heavy_transport["phase"] = "inbound"
+                heavy_transport["active"] = True
+                heavy_transport["visible"] = True
+                heavy_transport["timer"] = 0.0
+                heavy_transport["mission"] = mission
+                heavy_transport["facing_angle"] = math.degrees(math.atan2(-route_vec[1], -route_vec[0]))
+                barge_trip_phase = "inbound"
+                if mission == "sell":
+                    add_log("Tugboat inbound for barge pickup")
+                    add_transaction("Tugboat dispatch")
+                else:
+                    add_log("Tugboat inbound to buy fuel")
+                    add_transaction("Tugboat fuel dispatch")
 
         offscreen_spawn_timer += dt
         if offscreen_spawn_timer >= OFFSCREEN_SPAWN_INTERVAL:
@@ -2428,83 +2707,89 @@ async def run_game() -> None:
                 "docked": docked,
             })
 
-        # Barge trip state machine (sell all trash + refuel + return).
-        operating_boats = [b for b in boats if int(b.get("crew_assigned", 0)) >= int(b.get("crew_min", 1))]
-        all_operating_boats_docked = all(bool(b.get("docked", False)) for b in operating_boats) if operating_boats else True
+        # Heavy transport sell-trip state machine.
+        transport_move_dx = 0.0
+        transport_move_dy = 0.0
 
-        # Reset per-frame barge motion for wave effects.
-        barge_move_dx = 0.0
-        barge_move_dy = 0.0
+        if heavy_transport["active"]:
+            tr = heavy_transport["rect"]
+            assert isinstance(tr, pygame.Rect)
+            phase = str(heavy_transport.get("phase", "idle"))
 
-        if barge_trip_phase == "recall":
-            barge_facing_angle = 0.0
-            for boat in boats:
-                boat["pending_mode"] = MODE_STOP
-                boat["mode"] = MODE_STOP
-                boat["refuel_lock"] = False
-            if all_operating_boats_docked:
-                barge_trip_phase = "outbound"
-                add_log("Barge departing to sell trash")
-                add_transaction("Barge outbound")
+            if phase == "inbound":
+                reached, transport_move_dx, transport_move_dy = move_rect_center_toward(
+                    tr, BASE_RECT.centerx, BASE_RECT.centery, dt, HEAVY_TRANSPORT_SPEED, clamp_world=False
+                )
+                if abs(transport_move_dx) > 1e-4 or abs(transport_move_dy) > 1e-4:
+                    heavy_transport["facing_angle"] = math.degrees(math.atan2(transport_move_dy, transport_move_dx))
+                if reached:
+                    tr.center = BASE_RECT.center
+                    mission = str(heavy_transport.get("mission", "sell"))
 
-        elif barge_trip_phase == "outbound":
-            # Move fully off the right side of map.
-            target_x = WORLD_WIDTH + (BASE_RECT.width // 2) + 120
-            target_y = barge_home_center[1]
-            reached, barge_move_dx, barge_move_dy = move_rect_center_toward(
-                BASE_RECT, target_x, target_y, dt, BARGE_TRIP_SPEED, clamp_world=False
-            )
-            barge_facing_angle = 0.0
-            if reached:
-                barge_trip_phase = "selling"
-                barge_sell_timer = BARGE_SELL_TIME
-                barge_facing_angle = 180.0
-                add_log("Barge reached market")
+                    if mission == "sell":
+                        sold_units = recycling_inventory
+                        base_value = recycling_stock_value if recycling_stock_value > 0 else (sold_units * PLASTIC_SELL_PRICE)
+                        guaranteed_floor = sold_units * BARGE_MIN_SELL_PRICE_PER_UNIT
+                        sale_multiplier = 1.0 + (fame / 200.0)
+                        sold_value = max(base_value, guaranteed_floor) * sale_multiplier
 
-        elif barge_trip_phase == "selling":
-            # Wait off-screen, turned around.
-            barge_facing_angle = 180.0
-            barge_sell_timer = max(0.0, barge_sell_timer - dt)
-            if barge_sell_timer <= 0.0:
-                sold_units = recycling_inventory
-                base_value = recycling_stock_value if recycling_stock_value > 0 else (sold_units * PLASTIC_SELL_PRICE)
-                guaranteed_floor = sold_units * BARGE_MIN_SELL_PRICE_PER_UNIT
-                sale_multiplier = 1.0 + (fame / 200.0)
-                sold_value = max(base_value, guaranteed_floor) * sale_multiplier
-                if sold_units > 0:
-                    money += sold_value
-                    add_transaction(f"Barge sold {sold_units} trash for ${sold_value:.1f}")
-                recycling_inventory = 0
-                recycling_stock_value = 0.0
+                        if sold_units > 0:
+                            money += sold_value
+                            add_transaction(f"Tugboat loaded {sold_units} trash (+${sold_value:.1f})")
 
-                fuel_room = max(0.0, BARGE_FUEL_CAPACITY - barge_fuel_storage)
-                restock_budget = sold_value * BARGE_RESTOCK_BUDGET_RATIO
-                buy_units = min(BARGE_FUEL_RESTOCK_UNITS, fuel_room, restock_budget / max(1e-6, BARGE_FUEL_BUY_PRICE))
-                if buy_units > 0.1:
-                    buy_cost = buy_units * BARGE_FUEL_BUY_PRICE
-                    money -= buy_cost
-                    barge_fuel_storage = min(BARGE_FUEL_CAPACITY, barge_fuel_storage + buy_units)
-                    add_transaction(f"Barge fuel restock +{int(buy_units)} (cost ${buy_cost:.1f})")
+                        recycling_inventory = 0
+                        recycling_stock_value = 0.0
 
-                barge_trip_phase = "inbound"
-                add_log("Barge returning")
+                        fuel_room = max(0.0, BARGE_FUEL_CAPACITY - barge_fuel_storage)
+                        restock_budget = sold_value * BARGE_RESTOCK_BUDGET_RATIO
+                        buy_units = min(BARGE_FUEL_RESTOCK_UNITS, fuel_room, restock_budget / max(1e-6, BARGE_FUEL_BUY_PRICE))
+                        if buy_units > 0.1:
+                            buy_cost = buy_units * BARGE_FUEL_BUY_PRICE
+                            money -= buy_cost
+                            barge_fuel_storage = min(BARGE_FUEL_CAPACITY, barge_fuel_storage + buy_units)
+                            add_transaction(f"Barge fuel restock +{int(buy_units)} (cost ${buy_cost:.1f})")
+                    else:
+                        fuel_room = max(0.0, BARGE_FUEL_CAPACITY - barge_fuel_storage)
+                        buy_units = min(TRANSPORTER_FUEL_BUY_UNITS, fuel_room)
+                        buy_cost = buy_units * BARGE_FUEL_BUY_PRICE
+                        affordable_units = min(buy_units, money / max(1e-6, BARGE_FUEL_BUY_PRICE))
+                        if affordable_units > 0.1:
+                            spend = affordable_units * BARGE_FUEL_BUY_PRICE
+                            money -= spend
+                            barge_fuel_storage = min(BARGE_FUEL_CAPACITY, barge_fuel_storage + affordable_units)
+                            add_transaction(f"Fuel delivery +{int(affordable_units)} (cost ${spend:.1f})")
+                        else:
+                            add_transaction("Fuel delivery skipped (insufficient funds)")
 
-        elif barge_trip_phase == "inbound":
-            reached, barge_move_dx, barge_move_dy = move_rect_center_toward(
-                BASE_RECT, barge_home_center[0], barge_home_center[1], dt, BARGE_TRIP_SPEED, clamp_world=False
-            )
-            barge_facing_angle = 180.0
-            if reached:
-                BASE_RECT.center = barge_home_center
-                barge_facing_angle = 0.0
-                barge_trip_phase = "idle"
-                add_log("Barge returned")
-                add_transaction("Barge trip complete")
-                for boat in boats:
-                    boat["pending_mode"] = MODE_COLLECT
-                    boat["mode"] = MODE_COLLECT
-                    boat["refuel_lock"] = False
+                    heavy_transport["phase"] = "loading"
+                    heavy_transport["timer"] = HEAVY_TRANSPORT_DOCK_TIME
+                    barge_trip_phase = "loading"
+                    add_log("Tugboat loading complete")
 
+            elif phase == "loading":
+                heavy_transport["timer"] = max(0.0, float(heavy_transport.get("timer", 0.0)) - dt)
+                if heavy_transport["timer"] <= 0.0:
+                    heavy_transport["phase"] = "outbound"
+                    barge_trip_phase = "outbound"
+                    add_log("Tugboat outbound to market")
+
+            elif phase == "outbound":
+                exit_x, exit_y = heavy_transport.get("exit_target", (WORLD_WIDTH + 220, WORLD_HEIGHT // 2))
+                reached, transport_move_dx, transport_move_dy = move_rect_center_toward(
+                    tr, int(exit_x), int(exit_y), dt, HEAVY_TRANSPORT_SPEED, clamp_world=False
+                )
+                if abs(transport_move_dx) > 1e-4 or abs(transport_move_dy) > 1e-4:
+                    heavy_transport["facing_angle"] = math.degrees(math.atan2(transport_move_dy, transport_move_dx))
+                if reached:
+                    heavy_transport["phase"] = "idle"
+                    heavy_transport["active"] = False
+                    heavy_transport["visible"] = False
+                    barge_trip_phase = "idle"
+                    add_log("Tugboat completed sale route")
+                    add_transaction("Tugboat cycle complete")
+
+        else:
+            barge_trip_phase = "idle"
         # economy + derived stats
         assigned_total = sum(int(b["crew_assigned"]) for b in boats)
         manpower_cost = ((manpower_cost_per_min + assigned_total * 1.4) / 60.0) * dt
@@ -2526,11 +2811,10 @@ async def run_game() -> None:
             pending_cost_total = 0.0
 
         collection_rate = (trash_collected / max(1.0, elapsed_seconds)) * 60.0
-        morale_penalty = 3.0 * returning_count
-        morale = max(40.0, min(96.0, 68.0 + fame * 0.25 - morale_penalty))
-
-        if abs(barge_move_dx) > 1e-4 or abs(barge_move_dy) > 1e-4:
-            maybe_spawn_wave(wave_particles, BASE_RECT, barge_move_dx, barge_move_dy, dt)
+        if abs(transport_move_dx) > 1e-4 or abs(transport_move_dy) > 1e-4:
+            tr = heavy_transport["rect"]
+            assert isinstance(tr, pygame.Rect)
+            maybe_spawn_wave(wave_particles, tr, transport_move_dx, transport_move_dy, dt)
 
         update_wave(wave_particles, dt)
 
@@ -2561,7 +2845,20 @@ async def run_game() -> None:
                 boat_type,
             )
 
-        draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite, barge_facing_angle)
+        if bool(heavy_transport.get("visible", False)):
+            tr = heavy_transport["rect"]
+            assert isinstance(tr, pygame.Rect)
+            draw_boat(
+                screen,
+                tr,
+                camera_x,
+                camera_y,
+                transport_sprite,
+                float(heavy_transport.get("facing_angle", 0.0)),
+                "Tugboat",
+            )
+
+        draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite, 0.0)
         draw_offscreen_target_indicator(
             screen,
             body_font,
@@ -2605,7 +2902,6 @@ async def run_game() -> None:
             fame,
             crew_total,
             crew_available,
-            morale,
             total_trash_stored,
             recycling_inventory,
             barge_fuel_storage,
@@ -2626,6 +2922,8 @@ async def run_game() -> None:
             education_button_rects = draw_education_modal(screen, body_font, education_modal)
         else:
             education_button_rects = {}
+
+        draw_notifications(screen, body_font, notifications)
 
         if intro_fade_alpha > 0.0:
             fade_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)

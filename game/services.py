@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import sys
 import urllib.error
 import urllib.request
@@ -16,6 +17,46 @@ API_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "{model}:generateContent?key={api_key}"
 )
+
+FALLBACK_FACTS: list[str] = [
+    "Most marine plastic begins on land and reaches the ocean through rivers and stormwater.",
+    "Ghost nets can trap fish, turtles, and seabirds for years after being lost.",
+    "Microplastics can move from plankton to fish and up the food chain.",
+    "River interception systems can reduce downstream ocean trash loads significantly.",
+    "Frequent shoreline cleanups remove newly arrived debris before it breaks down.",
+    "Single-use packaging reduction is one of the fastest ways to cut litter volume.",
+    "Entanglement injuries can reduce feeding success and survival in marine animals.",
+    "Street litter often becomes ocean litter when heavy rain overwhelms drainage systems.",
+    "Upstream waste sorting improves recycling quality and lowers environmental leakage.",
+    "Preventing trash at source is usually cheaper than removing it offshore later.",
+]
+
+FALLBACK_QUIZZES: list[dict[str, Any]] = [
+    {"id": "q01", "question": "Which path most often carries city plastic to the ocean?", "options": ["Rivers and drains", "Coral reefs", "Sea grass", "Open tides"], "correct": "A"},
+    {"id": "q02", "question": "What is ghost gear?", "options": ["Abandoned fishing gear", "A sonar system", "A weather front", "A ship coating"], "correct": "A"},
+    {"id": "q03", "question": "Why are microplastics harmful?", "options": ["They are nutritious", "They vanish instantly", "They move through food webs", "They cool oceans"], "correct": "C"},
+    {"id": "q04", "question": "Best interception point for floating trash?", "options": ["Deep ocean", "River mouths", "Seafloor trenches", "Open bays only"], "correct": "B"},
+    {"id": "q05", "question": "Which animal often mistakes plastic bags for prey?", "options": ["Sea turtles", "Swordfish", "Seals", "Shrimp"], "correct": "A"},
+    {"id": "q06", "question": "What reduces plastic leakage long-term?", "options": ["More packaging", "Single-use growth", "Waste reduction", "Offshore dumping"], "correct": "C"},
+    {"id": "q07", "question": "Why do repeated cleanups help?", "options": ["Remove newly arriving debris", "Change moon phases", "Reduce wind", "Lower salinity"], "correct": "A"},
+    {"id": "q08", "question": "Stormwater can carry litter from where?", "options": ["Roads and sidewalks", "Coral polyps", "Whale pods", "Deep vents"], "correct": "A"},
+    {"id": "q09", "question": "Primary risk of entanglement debris?", "options": ["Animal injury", "Warmer water", "Lower oxygen", "Less sunlight"], "correct": "A"},
+    {"id": "q10", "question": "Why keep harbors cleaner upstream?", "options": ["Less ocean-bound trash", "More wave height", "Faster currents", "More algae"], "correct": "A"},
+]
+
+
+FALLBACK_TIPS: list[str] = [
+    "Carry a reusable bottle and bag to reduce single-use plastic waste.",
+    "Pick up five pieces of litter whenever you visit a beach or shoreline.",
+    "Secure trash bins so wind and rain cannot wash waste into drains.",
+    "Avoid products with microbeads and choose ocean-safe alternatives.",
+    "Join a local cleanup event and report heavy litter hotspots.",
+    "Sort recyclables correctly to reduce contamination and landfill leakage.",
+    "Use refill stations and bulk options to cut packaging waste.",
+    "Dispose of fishing line properly to prevent marine entanglement.",
+    "Encourage schools and clubs to run monthly cleanup challenges.",
+    "Support policies that improve stormwater filters and river trash capture.",
+]
 
 
 def _extract_text_from_gemini_response(data: dict[str, Any]) -> str:
@@ -173,6 +214,96 @@ def display_quiz(questions: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-async def generate_ocean_fact_async() -> str:
-    prompt = "Give one short, accurate ocean cleanup fact in under 22 words. No hashtags, no emojis."
-    return await generate_text(prompt)
+def choose_fallback_fact(previous_fallback_fact: str = "", previous_fact: str = "") -> tuple[str, str]:
+    exclude = {previous_fallback_fact.strip(), previous_fact.strip()}
+    candidates = [f for f in FALLBACK_FACTS if f not in exclude]
+    chosen = random.choice(candidates if candidates else FALLBACK_FACTS)
+    return chosen, chosen
+
+
+def choose_fallback_tip(previous_fallback_tip: str = "", previous_tip: str = "") -> tuple[str, str]:
+    exclude = {previous_fallback_tip.strip(), previous_tip.strip()}
+    candidates = [t for t in FALLBACK_TIPS if t not in exclude]
+    chosen = random.choice(candidates if candidates else FALLBACK_TIPS)
+    return chosen, chosen
+
+
+def choose_fallback_quiz(
+    num_questions: int = 1,
+    previous_fallback_quiz_key: str = "",
+) -> tuple[list[dict[str, Any]], str]:
+    q_count = max(1, min(int(num_questions), len(FALLBACK_QUIZZES)))
+    choice = random.sample(FALLBACK_QUIZZES, k=q_count)
+    key = "|".join(sorted(str(c.get("id", "")) for c in choice))
+
+    tries = 0
+    while key == previous_fallback_quiz_key and tries < 8:
+        choice = random.sample(FALLBACK_QUIZZES, k=q_count)
+        key = "|".join(sorted(str(c.get("id", "")) for c in choice))
+        tries += 1
+
+    cleaned = [
+        {
+            "question": str(c.get("question", "")),
+            "options": list(c.get("options", []))[:4],
+            "correct": str(c.get("correct", "A")).upper()[:1],
+        }
+        for c in choice
+    ]
+    return cleaned, key
+
+
+async def generate_ocean_fact_async(previous_fact: str = "") -> str:
+    topics = [
+        "microplastics",
+        "ghost fishing gear",
+        "river-to-ocean plastic flow",
+        "coral reef impacts",
+        "seabird and turtle safety",
+        "waste reduction and recycling",
+        "coastal cleanup impact",
+        "ocean food web contamination",
+    ]
+    styles = [
+        "numerical",
+        "cause-and-effect",
+        "short practical tip",
+        "species-focused",
+        "policy-focused",
+    ]
+
+    topic = random.choice(topics)
+    style = random.choice(styles)
+    avoid = previous_fact.strip()
+
+    prompt = (
+        "Generate one short, accurate ocean fact in under 22 words. "
+        f"Focus on {topic}. Style: {style}. "
+        "No hashtags, no emojis. Use a different sentence each call."
+    )
+    if avoid:
+        prompt += f" Do not repeat this sentence: {avoid}"
+
+    fact = (await generate_text(prompt)).strip()
+    if fact:
+        return fact
+
+    fallback_fact, _ = choose_fallback_fact(previous_fallback_fact="", previous_fact=avoid)
+    return fallback_fact
+
+
+async def generate_ocean_tip_async(previous_tip: str = "") -> str:
+    avoid = previous_tip.strip()
+    prompt = (
+        "Give one short practical action tip to reduce ocean trash, under 20 words. "
+        "Actionable and realistic. No hashtags, no emojis."
+    )
+    if avoid:
+        prompt += f" Do not repeat this sentence: {avoid}"
+
+    tip = (await generate_text(prompt)).strip()
+    if tip:
+        return tip
+
+    fallback_tip, _ = choose_fallback_tip(previous_fallback_tip="", previous_tip=avoid)
+    return fallback_tip
