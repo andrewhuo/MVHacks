@@ -95,6 +95,8 @@ BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC = 6.0
 BARGE_FUEL_BUY_PRICE = 1.6
 HEAVY_SELL_FUEL_REBUY_UNITS = 240.0
 SPEEDBOAT_PURCHASE_COST = 650.0
+TRANSPORTER_FUEL_FIXED_COST = 500.0
+
 
 # Big base ship in world corner
 BASE_RECT = pygame.Rect(WORLD_WIDTH // 2 - 330, WORLD_HEIGHT // 2 - 195, 660, 390)
@@ -2750,8 +2752,7 @@ async def run_game() -> None:
                             add_transaction(f"Fuel delivery: tank filled (cost ${spend:.1f})")
                         else:
                             add_transaction("Fuel delivery skipped (tank full or insufficient funds)")
-
-
+                        
                     heavy_transport["phase"] = "loading"
                     heavy_transport["timer"] = HEAVY_TRANSPORT_DOCK_TIME
                     barge_trip_phase = "loading"
