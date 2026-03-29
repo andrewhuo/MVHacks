@@ -1080,9 +1080,10 @@ def draw_sidebar(
         ".",
     ], 1)
 
-    sell_enabled = (barge_trip_phase == "idle") and (recycling_inventory > 0)
     fuel_room = max(0.0, barge_fuel_capacity - barge_fuel_storage)
-    buy_enabled = (barge_trip_phase == "idle") and (fuel_room > 2.0)
+    # Always clickable: requests are queued if transport is currently busy.
+    sell_enabled = True
+    buy_enabled = True
 
     btn_h = 20
     row_gap = 6
@@ -1106,8 +1107,7 @@ def draw_sidebar(
     pygame.draw.rect(content, buy_border, buy_btn, width=1)
     buy_lbl = body_font.render("Buy Fuel", False, buy_color)
     content.blit(buy_lbl, (buy_btn.x + (buy_btn.width - buy_lbl.get_width()) // 2, buy_btn.y + 2))
-    if buy_enabled:
-        mode_buttons_content["barge:buyfuel"] = buy_btn
+    mode_buttons_content["barge:buyfuel"] = buy_btn
 
     sell_fill = (102, 75, 50) if sell_enabled else (86, 68, 49)
     sell_border = (154, 122, 86) if sell_enabled else (122, 96, 70)
@@ -1116,8 +1116,7 @@ def draw_sidebar(
     pygame.draw.rect(content, sell_fill, sell_btn)
     pygame.draw.rect(content, sell_border, sell_btn, width=1)
     content.blit(sell_lbl, (sell_btn.x + (sell_btn.width - sell_lbl.get_width()) // 2, sell_btn.y + 2))
-    if sell_enabled:
-        mode_buttons_content["barge:selltrash"] = sell_btn
+    mode_buttons_content["barge:selltrash"] = sell_btn
 
     y, buy_boat_card = draw_card(y, "Buy More Boats", [
         "Add 1 Boat",
