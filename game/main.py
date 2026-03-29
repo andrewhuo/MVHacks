@@ -1124,13 +1124,16 @@ def draw_sidebar(
         f"Cost: ${int(boat_purchase_cost)}",
     ], 3)
 
-    buy_boat_btn = pygame.Rect(buy_boat_card.x + 12, buy_boat_card.bottom - 30, min(content_w - 24, 152), 20)
+    buy_boat_btn = pygame.Rect(buy_boat_card.x + 12, buy_boat_card.bottom - 25, min(content_w - 24, 152), 20)
     buy_fill = (102, 75, 50) if can_buy_boat else (86, 68, 49)
     buy_border = (154, 122, 86) if can_buy_boat else (122, 96, 70)
     buy_color = (255, 255, 255) if can_buy_boat else (200, 188, 170)
     pygame.draw.rect(content, buy_fill, buy_boat_btn)
     pygame.draw.rect(content, buy_border, buy_boat_btn, width=1)
-    buy_boat_lbl = body_font.render(f"Buy Boat (${int(boat_purchase_cost)})", False, buy_color)
+    buy_boat_label = f"Buy Boat (${int(boat_purchase_cost)})"
+    if body_font.size(buy_boat_label)[0] > buy_boat_btn.width - 8:
+        buy_boat_label = f"Buy (${int(boat_purchase_cost)})"
+    buy_boat_lbl = body_font.render(buy_boat_label, False, buy_color)
     content.blit(buy_boat_lbl, (buy_boat_btn.x + (buy_boat_btn.width - buy_boat_lbl.get_width()) // 2, buy_boat_btn.y + 2))
     if can_buy_boat:
         mode_buttons_content["fleet:buyboat"] = buy_boat_btn
