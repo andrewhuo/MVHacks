@@ -30,6 +30,11 @@ try:
 except ImportError:
     from services import generate_ocean_cleanup_quiz, display_quiz
 
+try:
+    from .services import generate_ocean_cleanup_quiz, display_quiz
+except ImportError:
+    from services import generate_ocean_cleanup_quiz, display_quiz
+
 
 
 # Window layout
@@ -1422,6 +1427,11 @@ async def run_game() -> None:
     elapsed_seconds = 0.0
     event_log: list[str] = [f"[00:00] Captain {captain_name} online"]
     transactions: list[str] = ["[00:00] Starting balance +$1200.0"]
+
+    # Quiz state
+    quiz_questions = []
+    show_quiz = False
+    quiz_text = ""
 
     camera_x = float(BASE_RECT.centerx - VIEWPORT_RECT.width // 2)
     camera_y = float(BASE_RECT.centery - VIEWPORT_RECT.height // 2)

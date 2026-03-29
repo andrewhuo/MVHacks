@@ -2,12 +2,55 @@ import os
 import google.genai as genai
 
 # Configure Gemini API
+# (Temporary direct key storage for local testing only; replace with env var in production)
 API_KEY = "AIzaSyDeZbXRD3wcPu3bRwCN5ZTWNQRCbM-X1DM"
 if API_KEY:
     client = genai.Client(api_key=API_KEY)
 else:
-    print("Warning: GEMINI_API_KEY environment variable not set. Quiz functionality will not work.")
+    print("Warning: API_KEY is not set. Quiz functionality will not work.")
     client = None
+
+def _select_supported_model() -> str | None:
+    if not client:
+        return None
+
+    # Try list of models with generateContent in supported_methods
+    # Prefer one directly from your model list; strip leading models/ if present.
+    try:
+        available = client.models.list()
+        for m in available:
+            if not getattr(m, 'name', None):
+                continue
+            nm = m.name
+            if nm.startswith('models/'):
+                nm = nm.replace('models/', '', 1)
+            candidates = [nm]
+            # keep an extra static list if the first model(s) fail.
+            extra = ["gemini-1.0", "gemini-1.5", "gemini-2.0", "gemini-2.0-flash", "gemini-2.5-flash"]
+            for candidate in candidates + extra:
+                try:
+                    client.models.generate_content(model=candidate, contents="Hello")
+                    print(f"Selected model: {candidate}")
+                    return candidate
+                except Exception:
+                    continue
+
+    except Exception as e:
+        print(f"Model list lookup failed: {e}")
+
+    # Fallback known free-tier/commonly available options if list mode fails completely.
+    fallback_candidates = ["gemini-1.0", "gemini-1.5", "gemini-2.0-flash", "gemini-2.5-flash", "gemini-pro-latest"]
+    for model in fallback_candidates:
+        try:
+            client.models.generate_content(model=model, contents="Hello")
+            print(f"Fallback model works: {model}")
+            return model
+        except Exception:
+            continue
+
+    print("No valid Gemini model found for generateContent.")
+    return None
+
 
 def generate_ocean_cleanup_quiz(num_questions=5):
     """
@@ -20,6 +63,11 @@ def generate_ocean_cleanup_quiz(num_questions=5):
         list: List of dictionaries containing questions, options, and correct answers
     """
     if not client:
+        return []
+
+    model_name = _select_supported_model()
+    if not model_name:
+        print("Error generating quiz: no valid model available")
         return []
 
     prompt = f"""
@@ -46,7 +94,7 @@ def generate_ocean_cleanup_quiz(num_questions=5):
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+            model=model_name,
             contents=prompt
         )
         content = response.text
