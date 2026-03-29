@@ -1,6 +1,7 @@
 # MVHacks - Pixel Boat Cleanup V0
 
 Minimal Python 3 + Pygame prototype where your boat automatically collects floating trash.
+PLAY THE GAME HERE: https://johaj10.github.io/proj-clean-oceans.github.io/v1/index.html
 
 ## Setup
 
