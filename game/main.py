@@ -2743,16 +2743,14 @@ async def run_game() -> None:
                             add_transaction(f"Barge fuel restock +{int(buy_units)} (cost ${buy_cost:.1f})")
                     else:
                         fuel_room = max(0.0, BARGE_FUEL_CAPACITY - barge_fuel_storage)
-                        buy_units = min(TRANSPORTER_FUEL_BUY_UNITS, fuel_room)
-                        buy_cost = buy_units * BARGE_FUEL_BUY_PRICE
-                        affordable_units = min(buy_units, money / max(1e-6, BARGE_FUEL_BUY_PRICE))
-                        if affordable_units > 0.1:
-                            spend = affordable_units * BARGE_FUEL_BUY_PRICE
+                        if fuel_room > 0.1 and money > 0.0:
+                            spend = min(money, TRANSPORTER_FUEL_FIXED_COST)
                             money -= spend
-                            barge_fuel_storage = min(BARGE_FUEL_CAPACITY, barge_fuel_storage + affordable_units)
-                            add_transaction(f"Fuel delivery +{int(affordable_units)} (cost ${spend:.1f})")
+                            barge_fuel_storage = BARGE_FUEL_CAPACITY
+                            add_transaction(f"Fuel delivery: tank filled (cost ${spend:.1f})")
                         else:
-                            add_transaction("Fuel delivery skipped (insufficient funds)")
+                            add_transaction("Fuel delivery skipped (tank full or insufficient funds)")
+
 
                     heavy_transport["phase"] = "loading"
                     heavy_transport["timer"] = HEAVY_TRANSPORT_DOCK_TIME
