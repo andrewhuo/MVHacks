@@ -170,7 +170,7 @@ SELL_EXIT_POINT = (WORLD_WIDTH - 46, WORLD_HEIGHT // 2)
 SELL_TRIP_SECONDS = 3.5
 SELL_DOCK_SECONDS = 1.2
 PLASTIC_SELL_PRICE = 2.4
-BARGE_TRASH_CAPACITY = 220
+BARGE_TRASH_CAPACITY = 1000
 BARGE_TRIP_SPEED = 175.0
 BARGE_SELL_TIME = 2.4
 HEAVY_TRANSPORT_SPEED = 150.0
@@ -1926,6 +1926,9 @@ async def run_game() -> None:
     offscreen_spawn_timer = 0.0
     win_active = False
     win_fade_alpha = 0.0
+    lose_active = False
+    lose_fade_alpha = 0.0
+    lose_reason = ""
 
     recycling_inventory = 0
     recycling_stock_value = 0.0
@@ -2401,7 +2404,7 @@ async def run_game() -> None:
                     if dropped_off > 0:
                         trash_collected += dropped_off
                         trash_stored = 0
-                        recycling_inventory += dropped_off
+                        recycling_inventory = min(BARGE_TRASH_CAPACITY, recycling_inventory + dropped_off)
                         recycling_stock_value += cargo_sale_value
                         cargo_sale_value = 0.0
                         add_transaction(f"Boat {boat_id} stocked +{dropped_off} units")
@@ -2486,7 +2489,7 @@ async def run_game() -> None:
                         if dropped_off > 0:
                             trash_collected += dropped_off
                             trash_stored = 0
-                            recycling_inventory += dropped_off
+                            recycling_inventory = min(BARGE_TRASH_CAPACITY, recycling_inventory + dropped_off)
                             recycling_stock_value += cargo_sale_value
                             cargo_sale_value = 0.0
                             add_transaction(f"Boat {boat_id} stocked +{dropped_off} units")
@@ -2532,7 +2535,7 @@ async def run_game() -> None:
                         if dropped_off > 0:
                             trash_collected += dropped_off
                             trash_stored = 0
-                            recycling_inventory += dropped_off
+                            recycling_inventory = min(BARGE_TRASH_CAPACITY, recycling_inventory + dropped_off)
                             recycling_stock_value += cargo_sale_value
                             cargo_sale_value = 0.0
                             add_transaction(f"Boat {boat_id} stocked +{dropped_off} units")
@@ -2561,7 +2564,7 @@ async def run_game() -> None:
                             boat_status = "Sell mode: docking"
                     else:
                         if trash_stored > 0:
-                            recycling_inventory += trash_stored
+                            recycling_inventory = min(BARGE_TRASH_CAPACITY, recycling_inventory + trash_stored)
                             recycling_stock_value += cargo_sale_value
                             trash_stored = 0
                             cargo_sale_value = 0.0
@@ -2881,8 +2884,24 @@ async def run_game() -> None:
         total_trash_stored = sum(int(b["trash_stored"]) for b in boats)
         crew_available = 0
 
+        total_mobile_fuel = sum(max(0.0, float(b.get("fuel", 0.0))) for b in boats)
+        total_fuel_available = max(0.0, barge_fuel_storage) + total_mobile_fuel
+
+        if (not win_active) and (not lose_active):
+            if money <= 0.0:
+                lose_active = True
+                lose_reason = "Out of Money"
+                add_log("Mission failed: out of money")
+                add_transaction("Defeat: funds depleted")
+            elif total_fuel_available <= 0.01:
+                lose_active = True
+                lose_reason = "Out of Fuel"
+                add_log("Mission failed: out of fuel")
+                add_transaction("Defeat: fuel depleted")
+
         if (
-            (not win_active)
+            (not lose_active)
+            and (not win_active)
             and len(trash_items) == 0
             and total_trash_stored <= 0
             and recycling_inventory <= 0
@@ -2942,6 +2961,17 @@ async def run_game() -> None:
             if win_fade_alpha >= 185.0:
                 win_text = body_font.render("You Won!", False, (255, 255, 255))
                 screen.blit(win_text, (WINDOW_WIDTH // 2 - win_text.get_width() // 2, WINDOW_HEIGHT // 2 - win_text.get_height() // 2))
+
+        if lose_active:
+            lose_fade_alpha = min(255.0, lose_fade_alpha + 145.0 * frame_dt)
+            lose_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            lose_overlay.fill((0, 0, 0, int(lose_fade_alpha)))
+            screen.blit(lose_overlay, (0, 0))
+            if lose_fade_alpha >= 185.0:
+                lose_text = body_font.render("You Lost!", False, (255, 255, 255))
+                reason_text = body_font.render(lose_reason or "Mission Failed", False, (255, 255, 255))
+                screen.blit(lose_text, (WINDOW_WIDTH // 2 - lose_text.get_width() // 2, WINDOW_HEIGHT // 2 - lose_text.get_height()))
+                screen.blit(reason_text, (WINDOW_WIDTH // 2 - reason_text.get_width() // 2, WINDOW_HEIGHT // 2 + 8))
 
         apply_pixelation(screen, VIEWPORT_RECT)
         pygame.display.flip()
