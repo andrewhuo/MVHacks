@@ -119,11 +119,9 @@ SPEEDBOAT_SPRITE_PATH = ASSETS_DIR / "smallboat.png"
 SAILBOAT_SPRITE_PATH = ASSETS_DIR / "sailboat.png"
 TUGBOAT_SPRITE_PATH = ASSETS_DIR / "tuboat.png"
 HOVERBOAT_SPRITE_PATH = ASSETS_DIR / "hoverboat.png"
-HEAVYBOAT_SPRITE_PATH = ASSETS_DIR / "heavyboat.png"
 BOAT_GUIDE_PATH_BY_TYPE = {
     "Speedboat": ASSETS_DIR / "smallboat_guide.png",
     "Sailboat": ASSETS_DIR / "sailboat_guide.png",
-    "Heavy Boat": ASSETS_DIR / "heavyboat_guide.png",
     "Tugboat": ASSETS_DIR / "tuboat_guide.png",
     "Hoverboat": ASSETS_DIR / "hoverboat_guide.png",
 }
@@ -135,7 +133,6 @@ BOAT_SPRITE_ANGLE_OFFSET_BY_TYPE = {
     "Sailboat": 90.0,
     "Tugboat": 90.0,
     "Hoverboat": 90.0,
-    "Heavy Boat": 0.0,
 }
 SPEEDBOAT_DIRECT_SCALE = 1.12
 MOTHERSHIP_SPRITE_PATH = ASSETS_DIR / "mothership.png"
@@ -197,28 +194,24 @@ BOAT_TYPE = "Speedboat"
 BOAT_CAPACITY_BY_TYPE = {
     "Speedboat": 12,
     "Sailboat": 16,
-    "Heavy Boat": 36,
     "Tugboat": 28,
     "Hoverboat": 20,
 }
 BOAT_CREW_MIN_BY_TYPE = {
     "Speedboat": 1,
     "Sailboat": 2,
-    "Heavy Boat": 4,
     "Tugboat": 2,
     "Hoverboat": 2,
 }
 BOAT_CREW_MAX_BY_TYPE = {
     "Speedboat": 2,
     "Sailboat": 4,
-    "Heavy Boat": 8,
     "Tugboat": 4,
     "Hoverboat": 3,
 }
 BOAT_REFUEL_SECONDS_BY_TYPE = {
     "Speedboat": 3.2,
     "Sailboat": 4.0,
-    "Heavy Boat": 7.0,
     "Tugboat": 6.0,
     "Hoverboat": 4.5,
 }
@@ -227,7 +220,6 @@ BOAT_REFUEL_SECONDS_BY_TYPE = {
 BOAT_SPEED_BY_TYPE = {
     "Speedboat": 145.0,
     "Sailboat": 34.0,
-    "Heavy Boat": 44.0,
     "Tugboat": 52.0,
     "Hoverboat": 165.0,
 }
@@ -236,7 +228,6 @@ BOAT_SPEED_BY_TYPE = {
 BOAT_BASE_SIZE_BY_TYPE = {
     "Speedboat": (18, 10),
     "Sailboat": (22, 11),
-    "Heavy Boat": (30, 14),
     "Tugboat": (32, 15),
     "Hoverboat": (24, 12),
 }
@@ -252,7 +243,6 @@ BOAT_SIZE_BY_TYPE = {
 BOAT_SPRITE_SIZE_MULT_BY_TYPE = {
     "Speedboat": 1.0,
     "Sailboat": 7.2,
-    "Heavy Boat": 8.0,
     "Tugboat": 8.2,
     "Hoverboat": 7.0,
 }
@@ -260,7 +250,6 @@ BOAT_SPRITE_SIZE_MULT_BY_TYPE = {
 BOAT_COLOR_BY_TYPE = {
     "Sailboat": (238, 226, 188),
     "Speedboat": (245, 192, 50),
-    "Heavy Boat": (188, 122, 84),
     "Tugboat": (208, 142, 76),
     "Hoverboat": (166, 220, 214),
 }
@@ -269,7 +258,6 @@ BOAT_COLOR_BY_TYPE = {
 VEHICLE_TYPES = [
     {"name": "Sailboat", "category": "Boat", "crew_min": 2, "crew_max": 4},
     {"name": "Speedboat", "category": "Boat", "crew_min": 1, "crew_max": 2},
-    {"name": "Heavy Boat", "category": "Boat", "crew_min": 4, "crew_max": 8},
     {"name": "Hoverboat", "category": "Boat", "crew_min": 2, "crew_max": 3},
     {"name": "Tugboat", "category": "Boat", "crew_min": 2, "crew_max": 4},
     {"name": "Helicopter", "category": "Vehicle", "crew_min": 1, "crew_max": 4},
@@ -371,7 +359,6 @@ def load_boat_sprites() -> dict[str, pygame.Surface]:
     path_map = {
         "Speedboat": SPEEDBOAT_SPRITE_PATH,
         "Sailboat": SAILBOAT_SPRITE_PATH,
-        "Heavy Boat": HEAVYBOAT_SPRITE_PATH,
         "Tugboat": TUGBOAT_SPRITE_PATH,
         "Hoverboat": HOVERBOAT_SPRITE_PATH,
     }
@@ -937,7 +924,7 @@ def draw_boat(
 
     angle_offset = BOAT_SPRITE_ANGLE_OFFSET_BY_TYPE.get(boat_type or "", BOAT_SPRITE_ANGLE_OFFSET)
     draw_angle = facing_angle_degrees + angle_offset
-    if boat_type == "Heavy Boat":
+    if boat_type == "Tugboat":
         snapped_angle = draw_angle
     else:
         snapped_angle = quantize_angle_to_8(draw_angle)
@@ -2181,7 +2168,7 @@ async def run_game() -> None:
                                 add_log(f"Boat {boat_id} crew increased to {boat['crew_assigned']}")
                             break
 
-                        if action == "sell" and str(boat.get("type", "")) != "Heavy Boat":
+                        if action == "sell" and str(boat.get("type", "")) != "Tugboat":
                             add_log(f"Boat {boat_id}: sell mode is transfer-boat only")
                             break
 
@@ -2518,9 +2505,9 @@ async def run_game() -> None:
                             boat_status = "Waiting barge fuel"
                             refuel_seconds_left = 0.0
 
-            elif boat_mode == MODE_SELL and boat_type != "Heavy Boat":
+            elif boat_mode == MODE_SELL and boat_type != "Tugboat":
                 boat_mode = MODE_COLLECT
-                boat_status = "Sell reserved for Heavy Boat"
+                boat_status = "Sell reserved for Tugboat"
 
             elif boat_mode == MODE_STOP:
                 boat_visible = True
@@ -2638,14 +2625,14 @@ async def run_game() -> None:
                             pending_sale_revenue = 0.0
                             pending_sale_units = 0
 
-                        if boat_type == "Heavy Boat":
+                        if boat_type == "Tugboat":
                             fuel_room = max(0.0, BARGE_FUEL_CAPACITY - barge_fuel_storage)
                             buy_units = min(HEAVY_SELL_FUEL_REBUY_UNITS, fuel_room, money / max(1e-6, BARGE_FUEL_BUY_PRICE))
                             if buy_units > 0.1:
                                 buy_cost = buy_units * BARGE_FUEL_BUY_PRICE
                                 money -= buy_cost
                                 barge_fuel_storage = min(BARGE_FUEL_CAPACITY, barge_fuel_storage + buy_units)
-                                add_transaction(f"Heavy Boat fuel load +{int(buy_units)} (cost ${buy_cost:.1f})")
+                                add_transaction(f"Tugboat fuel load +{int(buy_units)} (cost ${buy_cost:.1f})")
 
                         sell_phase = "dock_wait"
                         sell_timer = SELL_DOCK_SECONDS
@@ -2707,7 +2694,7 @@ async def run_game() -> None:
                 "docked": docked,
             })
 
-        # Heavy transport sell-trip state machine.
+        # Tugboat transport sell-trip state machine.
         transport_move_dx = 0.0
         transport_move_dy = 0.0
 
