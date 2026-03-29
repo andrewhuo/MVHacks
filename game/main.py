@@ -7,7 +7,7 @@
 - Left sidebar HUD (does not cover the map)
 - Ocean uses tiled asset from assets/ocean.jpeg
 - Boat uses speedboat sprite (assets/smallboat.png currently) with 8-direction facing
-- Wake particles trail behind the moving boat
+- Wave particles trail behind the moving boat
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import asyncio
 import math
 import random
 import sys
+from collections import deque
 from pathlib import Path
 
 import pygame
@@ -26,15 +27,13 @@ except ImportError:
     from intro import play_intro
 
 try:
-    from .services import generate_ocean_cleanup_quiz, display_quiz
+    from .services import generate_ocean_cleanup_quiz_async, generate_ocean_fact_async
 except ImportError:
-    from services import generate_ocean_cleanup_quiz, display_quiz
-
-try:
-    from .services import generate_ocean_cleanup_quiz, display_quiz
-except ImportError:
-    from services import generate_ocean_cleanup_quiz, display_quiz
-
+    try:
+        from services import generate_ocean_cleanup_quiz_async, generate_ocean_fact_async
+    except ImportError:
+        generate_ocean_cleanup_quiz_async = None
+        generate_ocean_fact_async = None
 
 
 # Window layout
@@ -43,7 +42,7 @@ WINDOW_HEIGHT = 820
 SIDEBAR_WIDTH = 390
 PIXELATE_SCALE = 2
 WORLD_ENTITY_SCALE = 0.78
-SKIP_INTRO_FOR_TESTING = False
+SKIP_INTRO_FOR_TESTING = True
 VIEWPORT_RECT = pygame.Rect(SIDEBAR_WIDTH, 0, WINDOW_WIDTH - SIDEBAR_WIDTH, WINDOW_HEIGHT)
 
 # World settings
@@ -64,6 +63,7 @@ MAX_TRASH_ITEMS = 700
 OFFSCREEN_SPAWN_INTERVAL = 1.15
 OFFSCREEN_PATCH_MIN = 8
 OFFSCREEN_PATCH_MAX = 18
+EDUCATION_PROMPT_INTERVAL_SECONDS = 60.0
 MAX_FUEL_SECONDS = 20.0
 REFUEL_SECONDS = 2.0
 MIN_REFUEL_SECONDS = 1.5
@@ -76,6 +76,19 @@ HEAVY_SELL_FUEL_REBUY_UNITS = 240.0
 # Big base ship in world corner
 BASE_RECT = pygame.Rect(WORLD_WIDTH // 2 - 330, WORLD_HEIGHT // 2 - 195, 660, 390)
 
+# Fast, deterministic dock lines relative to barge center (hackathon-stable mode).
+# Tweak these if you want to shift where boats park.
+SHOW_DOCK_DEBUG_DEFAULT = True
+
+DOCK_SEGMENTS_FROM_CENTER = [
+    # Left side (vertical segment)
+    {"x1": -206.0, "y1": -60.0, "x2": -206.0, "y2": 60.0, "nx": -1.0, "ny": 0.0, "angle": 90.0},
+    # Top side (horizontal segment)
+    {"x1": -118.0, "y1": -95.0, "x2": -18.0, "y2": -95.0, "nx": 0.0, "ny": -1.0, "angle": 180.0},
+    # Bottom side (horizontal segment)
+    {"x1": -82.0, "y1": 95.0, "x2": 58.0, "y2": 95.0, "nx": 0.0, "ny": 1.0, "angle": 180.0},
+]
+
 # Assets
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 OCEAN_TILE_PATH = ASSETS_DIR / "ocean.jpeg"
@@ -85,6 +98,14 @@ SAILBOAT_SPRITE_PATH = ASSETS_DIR / "sailboat.png"
 TUGBOAT_SPRITE_PATH = ASSETS_DIR / "tuboat.png"
 HOVERBOAT_SPRITE_PATH = ASSETS_DIR / "hoverboat.png"
 HEAVYBOAT_SPRITE_PATH = ASSETS_DIR / "heavyboat.png"
+BOAT_GUIDE_PATH_BY_TYPE = {
+    "Speedboat": ASSETS_DIR / "smallboat_guide.png",
+    "Sailboat": ASSETS_DIR / "sailboat_guide.png",
+    "Heavy Boat": ASSETS_DIR / "heavyboat_guide.png",
+    "Tugboat": ASSETS_DIR / "tuboat_guide.png",
+    "Hoverboat": ASSETS_DIR / "hoverboat_guide.png",
+}
+MOTHERSHIP_GUIDE_PATH = ASSETS_DIR / "mothership_guide.png"
 BOAT_SPRITE_SCALE = 1.0 * WORLD_ENTITY_SCALE
 BOAT_SPRITE_ANGLE_OFFSET = 90.0  # sprite defaults to facing up; offset aligns it to movement
 SPEEDBOAT_DIRECT_SCALE = 1.12
@@ -128,6 +149,12 @@ SELL_EXIT_POINT = (WORLD_WIDTH - 46, WORLD_HEIGHT // 2)
 SELL_TRIP_SECONDS = 3.5
 SELL_DOCK_SECONDS = 1.2
 PLASTIC_SELL_PRICE = 2.4
+BARGE_TRASH_CAPACITY = 220
+BARGE_TRIP_SPEED = 175.0
+BARGE_SELL_TIME = 2.4
+BARGE_FUEL_RESTOCK_UNITS = 280.0
+BARGE_MIN_SELL_PRICE_PER_UNIT = 3.2
+BARGE_RESTOCK_BUDGET_RATIO = 0.30
 
 BOAT_TYPE = "Speedboat"
 # Real-world inspired references (scaled down for gameplay):
@@ -439,6 +466,115 @@ def draw_clear_clouds(surface: pygame.Surface, clouds: list[dict[str, object]], 
 def quantize_angle_to_8(angle_degrees: float) -> float:
     """Quantize angle to 8 directions (every 45 degrees)."""
     return round(angle_degrees / 45.0) * 45.0
+
+
+def _extract_color_points(surface: pygame.Surface, color: str) -> list[tuple[int, int]]:
+    pts: list[tuple[int, int]] = []
+    w, h = surface.get_size()
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = surface.get_at((x, y))
+            if a < 120:
+                continue
+            if color == "magenta":
+                if r > 220 and b > 220 and g < 130:
+                    pts.append((x, y))
+            elif color == "cyan":
+                if g > 220 and b > 220 and r < 130:
+                    pts.append((x, y))
+            elif color == "green":
+                if g > 220 and r < 130 and b < 130:
+                    pts.append((x, y))
+    return pts
+
+
+def _connected_components(points: list[tuple[int, int]]) -> list[list[tuple[int, int]]]:
+    if not points:
+        return []
+    point_set = set(points)
+    components: list[list[tuple[int, int]]] = []
+
+    while point_set:
+        sx, sy = point_set.pop()
+        comp = [(sx, sy)]
+        q: deque[tuple[int, int]] = deque([(sx, sy)])
+
+        while q:
+            x, y = q.popleft()
+            for nx in (x - 1, x, x + 1):
+                for ny in (y - 1, y, y + 1):
+                    if nx == x and ny == y:
+                        continue
+                    if (nx, ny) in point_set:
+                        point_set.remove((nx, ny))
+                        q.append((nx, ny))
+                        comp.append((nx, ny))
+
+        components.append(comp)
+    return components
+
+
+def _segment_from_component(component: list[tuple[int, int]]) -> dict[str, float] | None:
+    if len(component) < 8:
+        return None
+    xs = [p[0] for p in component]
+    ys = [p[1] for p in component]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+
+    if span_x >= span_y:
+        y = sum(ys) / len(ys)
+        return {"x1": float(min_x), "y1": float(y), "x2": float(max_x), "y2": float(y), "axis": 0.0, "cx": float(sum(xs) / len(xs)), "cy": float(y)}
+
+    x = sum(xs) / len(xs)
+    return {"x1": float(x), "y1": float(min_y), "x2": float(x), "y2": float(max_y), "axis": 90.0, "cx": float(x), "cy": float(sum(ys) / len(ys))}
+
+
+def load_boat_dock_guides(boat_sprites: dict[str, pygame.Surface]) -> dict[str, dict[str, object]]:
+    guides: dict[str, dict[str, object]] = {}
+
+    for boat_type, sprite in boat_sprites.items():
+        guide_path = BOAT_GUIDE_PATH_BY_TYPE.get(boat_type)
+        if guide_path is None or not guide_path.exists():
+            continue
+
+        try:
+            raw = pygame.image.load(str(guide_path)).convert_alpha()
+        except pygame.error:
+            continue
+
+        guide = pygame.transform.scale(raw, sprite.get_size())
+        sides: list[dict[str, float]] = []
+        for color in ("magenta",):
+            pts = _extract_color_points(guide, color)
+            comps = _connected_components(pts)
+            if not comps:
+                continue
+            comp = max(comps, key=len)
+            seg = _segment_from_component(comp)
+            if seg is None:
+                continue
+            seg["color"] = color
+            seg["offset_x"] = float(seg["cx"] - (guide.get_width() * 0.5))
+            seg["offset_y"] = float(seg["cy"] - (guide.get_height() * 0.5))
+            sides.append(seg)
+
+        if sides:
+            guides[boat_type] = {"sides": sides}
+
+    return guides
+
+
+def _fallback_barge_dock_spots() -> list[dict[str, float]]:
+    return [
+        {"x1": float(BASE_RECT.left - 20), "y1": float(BASE_RECT.centery - 70), "x2": float(BASE_RECT.left - 20), "y2": float(BASE_RECT.centery + 70), "nx": -1.0, "ny": 0.0, "angle": 90.0},
+        {"x1": float(BASE_RECT.left + 80), "y1": float(BASE_RECT.top - 14), "x2": float(BASE_RECT.left + 210), "y2": float(BASE_RECT.top - 14), "nx": 0.0, "ny": -1.0, "angle": 180.0},
+        {"x1": float(BASE_RECT.left + 165), "y1": float(BASE_RECT.bottom + 14), "x2": float(BASE_RECT.left + 300), "y2": float(BASE_RECT.bottom + 14), "nx": 0.0, "ny": 1.0, "angle": 180.0},
+    ]
+
 def draw_fallback_ocean_gradient(surface: pygame.Surface) -> None:
     height = surface.get_height()
     width = surface.get_width()
@@ -636,7 +772,7 @@ def build_initial_trash(trash_sprites: list[pygame.Surface]) -> list[TrashItem]:
     return items
 
 
-class WakeParticle:
+class WaveParticle:
     def __init__(self, x: float, y: float, vx: float, vy: float, lifetime: float) -> None:
         self.x = x
         self.y = y
@@ -689,12 +825,15 @@ def draw_base_ship(
     camera_x: float,
     camera_y: float,
     mothership_sprite: pygame.Surface | None,
+    barge_angle_degrees: float = 0.0,
 ) -> None:
     base_screen = world_rect_to_screen(BASE_RECT, camera_x, camera_y)
 
     if mothership_sprite is not None:
-        sprite_rect = mothership_sprite.get_rect(center=base_screen.center)
-        surface.blit(mothership_sprite, sprite_rect)
+        snapped = quantize_angle_to_8(barge_angle_degrees)
+        rotated = pygame.transform.rotate(mothership_sprite, -snapped)
+        sprite_rect = rotated.get_rect(center=base_screen.center)
+        surface.blit(rotated, sprite_rect)
         return
 
     pygame.draw.rect(surface, BASE_FILL, base_screen, border_radius=10)
@@ -704,6 +843,41 @@ def draw_base_ship(
     pygame.draw.rect(surface, BASE_OUTLINE, deck, width=2, border_radius=8)
     label = base_font.render("MOTHERSHIP", True, TEXT_COLOR)
     surface.blit(label, (base_screen.x + 18, base_screen.y + 10))
+
+def draw_dock_debug_overlay(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    camera_x: float,
+    camera_y: float,
+    dock_spots: list[dict[str, float]],
+) -> None:
+    # Visual tuning overlay for dock segments and normals.
+    for i, spot in enumerate(dock_spots, start=1):
+        x1 = int(spot.get("x1", BASE_RECT.centerx))
+        y1 = int(spot.get("y1", BASE_RECT.centery))
+        x2 = int(spot.get("x2", BASE_RECT.centerx))
+        y2 = int(spot.get("y2", BASE_RECT.centery))
+
+        sx1, sy1 = world_to_screen(x1, y1, camera_x, camera_y)
+        sx2, sy2 = world_to_screen(x2, y2, camera_x, camera_y)
+
+        color = (255, 90, 90) if i == 1 else ((90, 255, 120) if i == 2 else (90, 170, 255))
+        pygame.draw.line(surface, color, (sx1, sy1), (sx2, sy2), 3)
+        pygame.draw.circle(surface, color, (sx1, sy1), 4)
+        pygame.draw.circle(surface, color, (sx2, sy2), 4)
+
+        mx = int((x1 + x2) * 0.5)
+        my = int((y1 + y2) * 0.5)
+        nx = float(spot.get("nx", 0.0))
+        ny = float(spot.get("ny", 0.0))
+        ex = int(mx + nx * 26.0)
+        ey = int(my + ny * 26.0)
+        smx, smy = world_to_screen(mx, my, camera_x, camera_y)
+        sex, sey = world_to_screen(ex, ey, camera_x, camera_y)
+        pygame.draw.line(surface, (255, 245, 160), (smx, smy), (sex, sey), 2)
+
+        label = font.render(f"D{i}", True, (255, 255, 255))
+        surface.blit(label, (smx + 6, smy - 10))
 
 def draw_boat(
     surface: pygame.Surface,
@@ -775,6 +949,7 @@ def draw_sidebar(
     transactions: list[str],
     menu_scroll: float,
     fleet_boats: list[dict[str, object]],
+    barge_trip_phase: str,
 ) -> tuple[float, dict[str, pygame.Rect]]:
     panel = pygame.Rect(0, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT)
 
@@ -873,13 +1048,26 @@ def draw_sidebar(
         f"Total Trash Collected: {collected}",
     ], 0)
 
-    y, _ = draw_card(y, "Barge", [
+    y, barge_card_rect = draw_card(y, "Barge", [
         f"Crew At Barge: {crew_available}/{crew_total}",
-        f"Trash Stock: {recycling_inventory}",
+        f"Trash Stock: {recycling_inventory}/{BARGE_TRASH_CAPACITY}",
         f"Ops Spend/min: ${total_cost_per_min:.1f}",
         f"Fuel Spend/min: ${fuel_cost_per_min:.1f}",
         f"Barge Fuel: {int(barge_fuel_storage)}/{int(barge_fuel_capacity)}",
+        f"Trip Status: {barge_trip_phase.title()}",
     ], 1)
+
+    sell_btn = pygame.Rect(content_w - 110, barge_card_rect.bottom - 30, 96, 20)
+    sell_enabled = (barge_trip_phase == "idle") and (recycling_inventory > 0)
+    btn_fill = (102, 75, 50) if sell_enabled else (86, 68, 49)
+    btn_border = (154, 122, 86) if sell_enabled else (122, 96, 70)
+    txt_color = (255, 255, 255) if sell_enabled else (200, 188, 170)
+    pygame.draw.rect(content, btn_fill, sell_btn)
+    pygame.draw.rect(content, btn_border, sell_btn, width=1)
+    sell_lbl = body_font.render("Sell Trash", True, txt_color)
+    content.blit(sell_lbl, (sell_btn.x + 8, sell_btn.y + 2))
+    if sell_enabled:
+        mode_buttons_content["barge:selltrash"] = sell_btn
 
     y, _ = draw_card(y, "Control Key", [
         "C = Collect",
@@ -887,15 +1075,6 @@ def draw_sidebar(
         "R = Return To Barge",
         "- / + = Crew Allocate",
     ], 2)
-
-    # Quiz button
-    quiz_btn_rect = pygame.Rect(8, y, content_w - 16, 40)
-    pygame.draw.rect(content, (126, 93, 60), quiz_btn_rect)
-    pygame.draw.rect(content, (170, 136, 95), quiz_btn_rect, width=1)
-    quiz_text = body_font.render("Take Ocean Quiz", True, (255, 255, 255))
-    content.blit(quiz_text, (quiz_btn_rect.x + 20, quiz_btn_rect.y + 10))
-    mode_buttons_content["quiz"] = quiz_btn_rect
-    y += 52
 
     # Fleet panel: one row per boat + action buttons
     fleet_top = y
@@ -1167,6 +1346,41 @@ def move_boat_toward_point_speed(
     return False, float(move_dx), float(move_dy)
 
 
+def move_rect_center_toward(
+    rect: pygame.Rect,
+    target_x: int,
+    target_y: int,
+    dt: float,
+    speed: float,
+    clamp_world: bool = True,
+) -> tuple[bool, float, float]:
+    cx, cy = rect.center
+    dx = target_x - cx
+    dy = target_y - cy
+    dist = math.hypot(dx, dy)
+    if dist <= 1.0:
+        rect.center = (target_x, target_y)
+        if clamp_world:
+            rect.clamp_ip(WORLD_RECT)
+        return True, 0.0, 0.0
+
+    step = max(1e-4, speed) * dt
+    if step >= dist:
+        rect.center = (target_x, target_y)
+        if clamp_world:
+            rect.clamp_ip(WORLD_RECT)
+        return True, float(dx), float(dy)
+
+    nx = dx / dist
+    ny = dy / dist
+    move_dx = nx * step
+    move_dy = ny * step
+    rect.center = (int(cx + move_dx), int(cy + move_dy))
+    if clamp_world:
+        rect.clamp_ip(WORLD_RECT)
+    return False, float(move_dx), float(move_dy)
+
+
 def move_boat_to_nearest_trash(boat_rect: pygame.Rect, trash_items: list[TrashItem], dt: float) -> tuple[float, float]:
     if not trash_items:
         return 0.0, 0.0
@@ -1191,69 +1405,31 @@ def move_boat_to_nearest_trash_speed(
 
 
 def get_barge_dock_spots(mothership_sprite: pygame.Surface | None) -> list[dict[str, float]]:
-    # Only three legal docking sides: stern (left), north/top, and south/bottom.
-    # The bow/right side is intentionally excluded.
-    if mothership_sprite is None:
-        return [
-            {"x": float(BASE_RECT.left - 34), "y": float(BASE_RECT.centery), "angle": 180.0},
-            {"x": float(BASE_RECT.centerx), "y": float(BASE_RECT.top - 30), "angle": 90.0},
-            {"x": float(BASE_RECT.centerx), "y": float(BASE_RECT.bottom + 30), "angle": -90.0},
-        ]
+    # Simple mode: all boats dock to barge center.
+    return [{"x": float(BASE_RECT.centerx), "y": float(BASE_RECT.centery), "angle": 180.0}]
 
-    w = mothership_sprite.get_width()
-    h = mothership_sprite.get_height()
-    mask = pygame.mask.from_surface(mothership_sprite)
-    bounds = mask.get_bounding_rects()
 
-    if bounds:
-        opaque = bounds[0].copy()
-        for r in bounds[1:]:
-            opaque.union_ip(r)
-    else:
-        opaque = pygame.Rect(0, 0, w, h)
-
-    left = float(opaque.left)
-    top = float(opaque.top)
-    bottom = float(opaque.bottom)
-
-    cx = float(BASE_RECT.centerx)
-    cy = float(BASE_RECT.centery)
-
-    def local_to_world(lx: float, ly: float) -> tuple[float, float]:
-        return cx + (lx - w * 0.5), cy + (ly - h * 0.5)
-
-    stern_x, stern_y = local_to_world(left - 18.0, (top + bottom) * 0.5)
-    north_x, north_y = local_to_world(left + (opaque.width * 0.45), top - 16.0)
-    south_x, south_y = local_to_world(left + (opaque.width * 0.45), bottom + 16.0)
-
-    return [
-        {"x": stern_x, "y": stern_y, "angle": 180.0},
-        {"x": north_x, "y": north_y, "angle": 90.0},
-        {"x": south_x, "y": south_y, "angle": -90.0},
-    ]
 def keep_boat_out_of_barge(boat_rect: pygame.Rect) -> None:
-    # Hard collision barrier around the mothership: boats can dock beside it, never inside it.
-    no_go = BASE_RECT.inflate(-6, -6)
-    if not boat_rect.colliderect(no_go):
-        return
+    # Simple mode: allow boats to pass through/into barge area.
+    return
 
-    # Push the boat out through the nearest side.
-    over_l = boat_rect.right - no_go.left
-    over_r = no_go.right - boat_rect.left
-    over_t = boat_rect.bottom - no_go.top
-    over_b = no_go.bottom - boat_rect.top
 
-    min_overlap = min(over_l, over_r, over_t, over_b)
-    if min_overlap == over_l:
-        boat_rect.right = no_go.left - 1
-    elif min_overlap == over_r:
-        boat_rect.left = no_go.right + 1
-    elif min_overlap == over_t:
-        boat_rect.bottom = no_go.top - 1
-    else:
-        boat_rect.top = no_go.bottom + 1
+def get_spot_anchor(spot: dict[str, float]) -> tuple[float, float]:
+    return (float(spot.get("x", BASE_RECT.centerx)), float(spot.get("y", BASE_RECT.centery)))
 
-    boat_rect.clamp_ip(WORLD_RECT)
+
+def resolve_dock_target_for_boat(
+    boat_rect: pygame.Rect,
+    spot: dict[str, float],
+    boat_type: str | None = None,
+    dock_guide: dict[str, object] | None = None,
+    visual_size: tuple[int, int] | None = None,
+) -> tuple[int, int, float]:
+    return (
+        int(spot.get("x", BASE_RECT.centerx)),
+        int(spot.get("y", BASE_RECT.centery)),
+        float(spot.get("angle", 180.0)),
+    )
 
 
 def get_or_assign_dock_slot(boat: dict[str, object], boats: list[dict[str, object]], spots: list[dict[str, float]]) -> int | None:
@@ -1281,7 +1457,7 @@ def get_or_assign_dock_slot(boat: dict[str, object], boats: list[dict[str, objec
         return slot
 
     bx, by = boat_rect.center
-    slot = min(free_slots, key=lambda i: (spots[i]["x"] - bx) ** 2 + (spots[i]["y"] - by) ** 2)
+    slot = min(free_slots, key=lambda i: (get_spot_anchor(spots[i])[0] - bx) ** 2 + (get_spot_anchor(spots[i])[1] - by) ** 2)
     boat["dock_slot"] = slot
     return slot
 
@@ -1291,9 +1467,10 @@ def get_nearest_dock_queue_point(boat_rect: pygame.Rect, spots: list[dict[str, f
         return BASE_RECT.left - 80, BASE_RECT.centery
 
     bx, by = boat_rect.center
-    nearest = min(spots, key=lambda spot: (spot["x"] - bx) ** 2 + (spot["y"] - by) ** 2)
-    dx = nearest["x"] - BASE_RECT.centerx
-    dy = nearest["y"] - BASE_RECT.centery
+    nearest = min(spots, key=lambda spot: (get_spot_anchor(spot)[0] - bx) ** 2 + (get_spot_anchor(spot)[1] - by) ** 2)
+    near_x, near_y = get_spot_anchor(nearest)
+    dx = near_x - BASE_RECT.centerx
+    dy = near_y - BASE_RECT.centery
     margin = 84
 
     if abs(dx) >= abs(dy):
@@ -1311,34 +1488,16 @@ def move_boat_toward_dock_spot(
     spot: dict[str, float],
     dt: float,
     speed: float,
+    boat_type: str | None = None,
+    dock_guide: dict[str, object] | None = None,
+    visual_size: tuple[int, int] | None = None,
 ) -> tuple[bool, float, float]:
-    target_x = int(spot["x"])
-    target_y = int(spot["y"])
-    no_go = BASE_RECT.inflate(44, 44)
-
-    if no_go.clipline(boat_rect.center, (target_x, target_y)):
-        margin = 92
-        tx = float(target_x)
-        ty = float(target_y)
-
-        if tx < BASE_RECT.left:
-            waypoint = (BASE_RECT.left - margin, int(max(BASE_RECT.top - margin, min(BASE_RECT.bottom + margin, boat_rect.centery))))
-        elif ty < BASE_RECT.top:
-            waypoint = (int(max(BASE_RECT.left - margin, min(BASE_RECT.right + margin, boat_rect.centerx))), BASE_RECT.top - margin)
-        elif ty > BASE_RECT.bottom:
-            waypoint = (int(max(BASE_RECT.left - margin, min(BASE_RECT.right + margin, boat_rect.centerx))), BASE_RECT.bottom + margin)
-        else:
-            waypoint = (BASE_RECT.left - margin, BASE_RECT.centery)
-
-        reached_wp, move_dx, move_dy = move_boat_toward_point_speed(boat_rect, int(waypoint[0]), int(waypoint[1]), dt, speed)
-        if not reached_wp:
-            return False, move_dx, move_dy
-
+    target_x, target_y, _ = resolve_dock_target_for_boat(boat_rect, spot, boat_type, dock_guide, visual_size)
     return move_boat_toward_point_speed(boat_rect, target_x, target_y, dt, speed)
 
 
-def maybe_spawn_wake(
-    wake_particles: list[WakeParticle],
+def maybe_spawn_wave(
+    wave_particles: list[WaveParticle],
     boat_rect: pygame.Rect,
     move_dx: float,
     move_dy: float,
@@ -1364,16 +1523,194 @@ def maybe_spawn_wake(
         vx = -direction_x * random.uniform(24.0, 62.0) + random.uniform(-10.0, 10.0)
         vy = -direction_y * random.uniform(24.0, 62.0) + random.uniform(-10.0, 10.0)
         life = random.uniform(0.65, 1.15)
-        wake_particles.append(WakeParticle(base_x + jitter_x, base_y + jitter_y, vx, vy, life))
+        wave_particles.append(WaveParticle(base_x + jitter_x, base_y + jitter_y, vx, vy, life))
 
 
-def update_wake(wake_particles: list[WakeParticle], dt: float) -> None:
-    alive: list[WakeParticle] = []
-    for p in wake_particles:
+def update_wave(wave_particles: list[WaveParticle], dt: float) -> None:
+    alive: list[WaveParticle] = []
+    for p in wave_particles:
         p.update(dt)
         if p.alive():
             alive.append(p)
-    wake_particles[:] = alive
+    wave_particles[:] = alive
+
+
+def wrap_lines(font: pygame.font.Font, text: str, max_width: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        test = f"{current} {word}"
+        if font.size(test)[0] <= max_width:
+            current = test
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+async def fetch_random_education_prompt() -> dict[str, object]:
+    use_quiz = random.random() < 0.5
+
+    if use_quiz and callable(generate_ocean_cleanup_quiz_async):
+        q_count = random.randint(2, 3)
+        try:
+            questions = await generate_ocean_cleanup_quiz_async(q_count)
+        except Exception:
+            questions = []
+
+        cleaned: list[dict[str, object]] = []
+        for q in questions[:q_count]:
+            question = str(q.get("question", "")).strip()
+            options = q.get("options", [])
+            if not isinstance(options, list):
+                continue
+            options = [str(o).strip() for o in options][:4]
+            correct = str(q.get("correct", "")).strip().upper()[:1]
+            if question and len(options) == 4 and correct in {"A", "B", "C", "D"}:
+                cleaned.append({"question": question, "options": options, "correct": correct})
+
+        if len(cleaned) >= 2:
+            return {
+                "kind": "quiz",
+                "title": "Ocean Knowledge Check",
+                "questions": cleaned,
+                "selected": [None for _ in cleaned],
+                "submitted": False,
+                "score": 0,
+            }
+
+    fact_text = ""
+    if callable(generate_ocean_fact_async):
+        try:
+            fact_text = (await generate_ocean_fact_async()).strip()
+        except Exception:
+            fact_text = ""
+
+    if not fact_text:
+        fact_text = "Plastic can persist in the ocean for decades, breaking into microplastics that harm marine food chains."
+
+    return {"kind": "fact", "title": "Ocean Fact", "text": fact_text}
+
+
+def draw_education_modal(
+    surface: pygame.Surface,
+    body_font: pygame.font.Font,
+    modal: dict[str, object] | None,
+) -> dict[str, pygame.Rect]:
+    button_rects: dict[str, pygame.Rect] = {}
+    if not modal:
+        return button_rects
+
+    overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 165))
+    surface.blit(overlay, (0, 0))
+
+    modal_w = min(760, VIEWPORT_RECT.width - 40)
+    modal_h = min(560, WINDOW_HEIGHT - 60)
+    modal_rect = pygame.Rect(
+        VIEWPORT_RECT.x + (VIEWPORT_RECT.width - modal_w) // 2,
+        (WINDOW_HEIGHT - modal_h) // 2,
+        modal_w,
+        modal_h,
+    )
+
+    pygame.draw.rect(surface, (186, 147, 96), modal_rect, border_radius=8)
+    pygame.draw.rect(surface, (104, 75, 45), modal_rect, width=4, border_radius=8)
+
+    title_font = pygame.font.SysFont("Courier New", 24, bold=True)
+    title = str(modal.get("title", "Ocean Prompt"))
+    t_surf = title_font.render(title, True, (255, 255, 255))
+    surface.blit(t_surf, (modal_rect.x + 18, modal_rect.y + 14))
+
+    y = modal_rect.y + 58
+    kind = str(modal.get("kind", "fact"))
+
+    if kind == "quiz":
+        questions = modal.get("questions", [])
+        selected = modal.get("selected", [])
+        if not isinstance(questions, list):
+            questions = []
+        if not isinstance(selected, list):
+            selected = []
+
+        for qi, q in enumerate(questions):
+            if y > modal_rect.bottom - 120:
+                break
+            if not isinstance(q, dict):
+                continue
+
+            q_text = str(q.get("question", "")).strip()
+            q_lines = wrap_lines(body_font, f"{qi + 1}. {q_text}", modal_rect.width - 40)[:2]
+            for line in q_lines:
+                line_surf = body_font.render(line, True, (255, 255, 255))
+                surface.blit(line_surf, (modal_rect.x + 18, y))
+                y += 22
+
+            options = q.get("options", [])
+            if not isinstance(options, list):
+                options = []
+            option_w = (modal_rect.width - 58) // 2
+            option_h = 28
+
+            for oi, opt in enumerate(options[:4]):
+                letter = chr(65 + oi)
+                col = oi % 2
+                row = oi // 2
+                bx = modal_rect.x + 18 + col * (option_w + 10)
+                by = y + row * (option_h + 8)
+                brect = pygame.Rect(bx, by, option_w, option_h)
+                chosen = qi < len(selected) and selected[qi] == letter
+                bg = (218, 185, 130) if chosen else (158, 121, 80)
+                pygame.draw.rect(surface, bg, brect, border_radius=5)
+                pygame.draw.rect(surface, (92, 67, 42), brect, width=2, border_radius=5)
+                txt = body_font.render(f"{letter}) {str(opt)}", True, (255, 255, 255))
+                surface.blit(txt, (brect.x + 8, brect.y + 5))
+                button_rects[f"q{qi}:{letter}"] = brect
+
+            y += option_h * 2 + 14
+
+        submitted = bool(modal.get("submitted", False))
+        if submitted:
+            score = int(modal.get("score", 0))
+            total = len(questions)
+            result = body_font.render(f"Score: {score}/{total}", True, (255, 255, 255))
+            surface.blit(result, (modal_rect.x + 18, modal_rect.bottom - 78))
+
+            done_rect = pygame.Rect(modal_rect.right - 130, modal_rect.bottom - 46, 104, 30)
+            pygame.draw.rect(surface, (99, 152, 95), done_rect, border_radius=5)
+            pygame.draw.rect(surface, (58, 91, 54), done_rect, width=2, border_radius=5)
+            done_lbl = body_font.render("Done", True, (255, 255, 255))
+            surface.blit(done_lbl, (done_rect.x + 28, done_rect.y + 5))
+            button_rects["done"] = done_rect
+        else:
+            submit_rect = pygame.Rect(modal_rect.right - 150, modal_rect.bottom - 46, 124, 30)
+            pygame.draw.rect(surface, (209, 178, 120), submit_rect, border_radius=5)
+            pygame.draw.rect(surface, (92, 67, 42), submit_rect, width=2, border_radius=5)
+            submit_lbl = body_font.render("Submit Quiz", True, (255, 255, 255))
+            surface.blit(submit_lbl, (submit_rect.x + 10, submit_rect.y + 5))
+            button_rects["submit"] = submit_rect
+
+    else:
+        fact = str(modal.get("text", ""))
+        lines = wrap_lines(body_font, fact, modal_rect.width - 40)
+        for line in lines[:14]:
+            line_surf = body_font.render(line, True, (255, 255, 255))
+            surface.blit(line_surf, (modal_rect.x + 18, y))
+            y += 24
+
+        done_rect = pygame.Rect(modal_rect.right - 120, modal_rect.bottom - 46, 94, 30)
+        pygame.draw.rect(surface, (99, 152, 95), done_rect, border_radius=5)
+        pygame.draw.rect(surface, (58, 91, 54), done_rect, width=2, border_radius=5)
+        done_lbl = body_font.render("Done", True, (255, 255, 255))
+        surface.blit(done_lbl, (done_rect.x + 22, done_rect.y + 5))
+        button_rects["done"] = done_rect
+
+    return button_rects
 
 
 async def run_game() -> None:
@@ -1399,13 +1736,14 @@ async def run_game() -> None:
 
     ocean_tile = load_ocean_tile()
     boat_sprites = load_boat_sprites()
+    boat_dock_guides = load_boat_dock_guides(boat_sprites)
     mothership_sprite = load_mothership_sprite()
     trash_sprites = load_trash_sprites()
     clear_cloud_sprites = load_clear_cloud_sprites()
 
     trash_items = build_initial_trash(trash_sprites)
     clear_clouds = build_clear_clouds(clear_cloud_sprites, CLEAR_CLOUD_COUNT)
-    wake_particles: list[WakeParticle] = []
+    wave_particles: list[WaveParticle] = []
 
     trash_collected = 0
     score = 0
@@ -1425,13 +1763,8 @@ async def run_game() -> None:
 
     collection_rate = 0.0
     elapsed_seconds = 0.0
-    event_log: list[str] = [f"[00:00] Captain {captain_name} online"]
+    event_log: list[str] = [f"[00:00] Captain {captain_name} online", "[00:00] Press F2: dock debug"]
     transactions: list[str] = ["[00:00] Starting balance +$1200.0"]
-
-    # Quiz state
-    quiz_questions = []
-    show_quiz = False
-    quiz_text = ""
 
     camera_x = float(BASE_RECT.centerx - VIEWPORT_RECT.width // 2)
     camera_y = float(BASE_RECT.centery - VIEWPORT_RECT.height // 2)
@@ -1442,6 +1775,11 @@ async def run_game() -> None:
     menu_scroll = 0.0
     menu_max_scroll = 0.0
     mode_button_rects: dict[str, pygame.Rect] = {}
+    education_button_rects: dict[str, pygame.Rect] = {}
+    education_modal: dict[str, object] | None = None
+    education_task: asyncio.Task | None = None
+    education_timer = 0.0
+    show_dock_debug = SHOW_DOCK_DEBUG_DEFAULT
 
     offscreen_spawn_timer = 0.0
 
@@ -1449,10 +1787,13 @@ async def run_game() -> None:
     recycling_stock_value = 0.0
     barge_fuel_storage = BARGE_FUEL_START
 
-    # Quiz state
-    quiz_questions = []
-    show_quiz = False
-    quiz_text = ""
+    barge_home_center = (BASE_RECT.centerx, BASE_RECT.centery)
+    barge_trip_phase = "idle"
+    barge_sell_requested = False
+    barge_sell_timer = 0.0
+    barge_facing_angle = 0.0
+    barge_move_dx = 0.0
+    barge_move_dy = 0.0
 
     boat_layout = [
         ("Speedboat", (95, -70)),
@@ -1475,7 +1816,7 @@ async def run_game() -> None:
             "rect": boat_rect,
             "mode": MODE_COLLECT,
             "pending_mode": MODE_COLLECT,
-            "refuel_lock": True,
+            "refuel_lock": (idx != 1),
             "state": STATE_COLLECTING,
             "status": "Initializing",
             "speed": BOAT_SPEED_BY_TYPE.get(boat_type, BOAT_SPEED),
@@ -1497,6 +1838,8 @@ async def run_game() -> None:
             "pending_sale_units": 0,
             "dock_slot": None,
             "docked": False,
+            "dock_guide": boat_dock_guides.get(boat_type),
+            "visual_size": boat_sprites.get(boat_type).get_size() if boat_sprites.get(boat_type) is not None else (bw, bh),
         })
 
     def add_log(msg: str) -> None:
@@ -1517,23 +1860,69 @@ async def run_game() -> None:
 
     running = True
     while running:
-        dt = clock.tick(FPS) / 1000.0
-        elapsed_seconds += dt
+        frame_dt = clock.tick(FPS) / 1000.0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    if show_quiz:
-                        show_quiz = False
-                    else:
-                        running = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                running = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_F2:
+                show_dock_debug = not show_dock_debug
+                add_log(f"Dock Debug {'ON' if show_dock_debug else 'OFF'}")
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if education_modal is not None:
+                    for action, rect in education_button_rects.items():
+                        if not rect.collidepoint(event.pos):
+                            continue
+
+                        if action == "done":
+                            education_modal = None
+                            education_button_rects = {}
+                            add_log("Education prompt closed")
+                            break
+
+                        if action == "submit" and str(education_modal.get("kind", "")) == "quiz":
+                            questions = education_modal.get("questions", [])
+                            selected = education_modal.get("selected", [])
+                            if isinstance(questions, list) and isinstance(selected, list):
+                                score_count = 0
+                                for qi, q in enumerate(questions):
+                                    if not isinstance(q, dict):
+                                        continue
+                                    correct = str(q.get("correct", "")).upper()[:1]
+                                    guess = selected[qi] if qi < len(selected) else None
+                                    if guess == correct:
+                                        score_count += 1
+                                education_modal["submitted"] = True
+                                education_modal["score"] = score_count
+                            break
+
+                        if action.startswith("q") and ":" in action and str(education_modal.get("kind", "")) == "quiz":
+                            prefix, letter = action.split(":", 1)
+                            try:
+                                q_idx = int(prefix[1:])
+                            except ValueError:
+                                continue
+                            selected = education_modal.get("selected", [])
+                            submitted = bool(education_modal.get("submitted", False))
+                            if isinstance(selected, list) and not submitted and 0 <= q_idx < len(selected):
+                                selected[q_idx] = letter
+                                education_modal["selected"] = selected
+                            break
+                    continue
+
                 if event.pos[0] < SIDEBAR_WIDTH:
                     for button_key, rect in mode_button_rects.items():
                         if not rect.collidepoint(event.pos):
                             continue
+
+                        if button_key == "barge:selltrash":
+                            barge_sell_requested = True
+                            add_log("Barge sale trip requested")
+                            add_transaction("Barge sale queued")
+                            break
+
                         try:
                             boat_id_str, action = button_key.split(":", 1)
                             boat_id = int(boat_id_str)
@@ -1581,13 +1970,6 @@ async def run_game() -> None:
                         add_log(f"Boat {boat_id} command queued: {label} (refuel first)")
                         add_transaction(f"Boat {boat_id} queued -> {label} (refuel)")
                         break
-                    # Handle quiz button
-                    if "quiz" in mode_button_rects and mode_button_rects["quiz"].collidepoint(event.pos):
-                        if not quiz_questions:
-                            quiz_questions = generate_ocean_cleanup_quiz(5)
-                        quiz_text = display_quiz(quiz_questions)
-                        show_quiz = True
-                        break
                 elif VIEWPORT_RECT.collidepoint(event.pos):
                     dragging = True
                     last_mouse = event.pos
@@ -1605,6 +1987,44 @@ async def run_game() -> None:
                 if mx < SIDEBAR_WIDTH:
                     menu_scroll -= event.y * 26
                     menu_scroll = max(0.0, min(menu_scroll, menu_max_scroll))
+
+        if education_task is not None and education_task.done():
+            try:
+                education_modal = education_task.result()
+                if education_modal:
+                    add_log("Education prompt opened")
+            except Exception:
+                education_modal = {
+                    "kind": "fact",
+                    "title": "Ocean Fact",
+                    "text": "Small cleanup actions add up and protect marine habitats over time.",
+                }
+            education_task = None
+
+        if education_modal is None and education_task is None:
+            education_timer += frame_dt
+            if education_timer >= EDUCATION_PROMPT_INTERVAL_SECONDS:
+                education_timer = 0.0
+                education_task = asyncio.create_task(fetch_random_education_prompt())
+                add_log("Fetching ocean fact/quiz...")
+
+        dt = 0.0 if education_modal is not None else frame_dt
+        elapsed_seconds += dt
+
+        if barge_trip_phase == "idle" and (barge_sell_requested or recycling_inventory >= BARGE_TRASH_CAPACITY):
+            if recycling_inventory > 0:
+                barge_trip_phase = "recall"
+                barge_sell_requested = False
+                for boat in boats:
+                    boat["pending_mode"] = MODE_STOP
+                    boat["mode"] = MODE_STOP
+                    boat["refuel_lock"] = False
+                    boat["dock_slot"] = None
+                    if str(boat.get("state", STATE_COLLECTING)) == STATE_COLLECTING:
+                        boat["state"] = STATE_RETURNING
+                add_log("Recalling boats to barge for sale trip")
+            else:
+                barge_sell_requested = False
 
         offscreen_spawn_timer += dt
         if offscreen_spawn_timer >= OFFSCREEN_SPAWN_INTERVAL:
@@ -1635,6 +2055,7 @@ async def run_game() -> None:
 
         returning_count = 0
         fleet_boats: list[dict[str, object]] = []
+        dock_spots = get_barge_dock_spots(mothership_sprite)
 
         for boat in boats:
             boat_rect = boat["rect"]
@@ -1664,8 +2085,9 @@ async def run_game() -> None:
             pending_sale_units = int(boat["pending_sale_units"])
             refuel_lock_active = bool(boat["refuel_lock"])
             dock_slot = boat.get("dock_slot") if isinstance(boat.get("dock_slot"), int) else None
+            dock_guide = boat.get("dock_guide") if isinstance(boat.get("dock_guide"), dict) else None
+            visual_size = boat.get("visual_size") if isinstance(boat.get("visual_size"), tuple) else None
             docked = False
-            dock_spots = get_barge_dock_spots(mothership_sprite)
 
             move_dx = 0.0
             move_dy = 0.0
@@ -1695,15 +2117,26 @@ async def run_game() -> None:
                     boat_status = f"Command {mode_label}: waiting dock slot"
                 else:
                     spot = dock_spots[slot]
-                    at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
+                    at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed, boat_type, dock_guide, visual_size)
                     if at_base:
+                        tx, ty, dock_angle = resolve_dock_target_for_boat(boat_rect, spot, boat_type, dock_guide, visual_size)
+                        boat_rect.center = (tx, ty)
                         docked = True
-                        facing_angle = float(spot["angle"])
+                        facing_angle = dock_angle
 
                 if not at_base:
                     if slot is not None:
                         boat_status = f"Command {mode_label}: docking"
                 else:
+                    dropped_off = trash_stored
+                    if dropped_off > 0:
+                        trash_collected += dropped_off
+                        trash_stored = 0
+                        recycling_inventory += dropped_off
+                        recycling_stock_value += cargo_sale_value
+                        cargo_sale_value = 0.0
+                        add_transaction(f"Boat {boat_id} stocked +{dropped_off} units")
+
                     if fuel_seconds < (MAX_FUEL_SECONDS - 1e-3):
                         if boat_state != STATE_REFUELING and refuel_seconds_left <= 0.0:
                             boat_state = STATE_REFUELING
@@ -1773,10 +2206,12 @@ async def run_game() -> None:
                         boat_status = "Waiting dock slot"
                     else:
                         spot = dock_spots[slot]
-                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
+                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed, boat_type, dock_guide, visual_size)
                         if at_base:
+                            tx, ty, dock_angle = resolve_dock_target_for_boat(boat_rect, spot, boat_type, dock_guide, visual_size)
+                            boat_rect.center = (tx, ty)
                             docked = True
-                            facing_angle = float(spot["angle"])
+                            facing_angle = dock_angle
                     if at_base:
                         dropped_off = trash_stored
                         if dropped_off > 0:
@@ -1817,10 +2252,21 @@ async def run_game() -> None:
                     boat_status = "Waiting dock slot"
                 else:
                     spot = dock_spots[slot]
-                    at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
+                    at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed, boat_type, dock_guide, visual_size)
                     if at_base:
+                        tx, ty, dock_angle = resolve_dock_target_for_boat(boat_rect, spot, boat_type, dock_guide, visual_size)
+                        boat_rect.center = (tx, ty)
                         docked = True
-                        facing_angle = float(spot["angle"])
+                        facing_angle = dock_angle
+
+                        dropped_off = trash_stored
+                        if dropped_off > 0:
+                            trash_collected += dropped_off
+                            trash_stored = 0
+                            recycling_inventory += dropped_off
+                            recycling_stock_value += cargo_sale_value
+                            cargo_sale_value = 0.0
+                            add_transaction(f"Boat {boat_id} stocked +{dropped_off} units")
                     boat_status = "Stopped at barge" if at_base else "Returning to dock"
 
             else:  # MODE_SELL
@@ -1834,10 +2280,12 @@ async def run_game() -> None:
                         boat_status = "Sell mode: waiting dock slot"
                     else:
                         spot = dock_spots[slot]
-                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
+                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed, boat_type, dock_guide, visual_size)
                         if at_base:
                             docked = True
-                            facing_angle = float(spot["angle"])
+                            tx, ty, dock_angle = resolve_dock_target_for_boat(boat_rect, spot, boat_type, dock_guide, visual_size)
+                            boat_rect.center = (tx, ty)
+                            facing_angle = dock_angle
                     boat_visible = True
                     if not at_base:
                         if slot is not None:
@@ -1897,10 +2345,12 @@ async def run_game() -> None:
                         boat_status = "Returning from sale (queue)"
                     else:
                         spot = dock_spots[slot]
-                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed)
+                        at_base, move_dx, move_dy = move_boat_toward_dock_spot(boat_rect, spot, dt, boat_speed, boat_type, dock_guide, visual_size)
                         if at_base:
                             docked = True
-                            facing_angle = float(spot["angle"])
+                            tx, ty, dock_angle = resolve_dock_target_for_boat(boat_rect, spot, boat_type, dock_guide, visual_size)
+                            boat_rect.center = (tx, ty)
+                            facing_angle = dock_angle
                     boat_visible = True
                     if at_base:
                         if pending_sale_revenue > 0.0 and pending_sale_units > 0:
@@ -1935,7 +2385,7 @@ async def run_game() -> None:
 
             if abs(move_dx) > 1e-4 or abs(move_dy) > 1e-4:
                 facing_angle = math.degrees(math.atan2(move_dy, move_dx))
-                maybe_spawn_wake(wake_particles, boat_rect, move_dx, move_dy, dt)
+                maybe_spawn_wave(wave_particles, boat_rect, move_dx, move_dy, dt)
 
             boat["mode"] = boat_mode
             boat["pending_mode"] = pending_mode
@@ -1978,6 +2428,83 @@ async def run_game() -> None:
                 "docked": docked,
             })
 
+        # Barge trip state machine (sell all trash + refuel + return).
+        operating_boats = [b for b in boats if int(b.get("crew_assigned", 0)) >= int(b.get("crew_min", 1))]
+        all_operating_boats_docked = all(bool(b.get("docked", False)) for b in operating_boats) if operating_boats else True
+
+        # Reset per-frame barge motion for wave effects.
+        barge_move_dx = 0.0
+        barge_move_dy = 0.0
+
+        if barge_trip_phase == "recall":
+            barge_facing_angle = 0.0
+            for boat in boats:
+                boat["pending_mode"] = MODE_STOP
+                boat["mode"] = MODE_STOP
+                boat["refuel_lock"] = False
+            if all_operating_boats_docked:
+                barge_trip_phase = "outbound"
+                add_log("Barge departing to sell trash")
+                add_transaction("Barge outbound")
+
+        elif barge_trip_phase == "outbound":
+            # Move fully off the right side of map.
+            target_x = WORLD_WIDTH + (BASE_RECT.width // 2) + 120
+            target_y = barge_home_center[1]
+            reached, barge_move_dx, barge_move_dy = move_rect_center_toward(
+                BASE_RECT, target_x, target_y, dt, BARGE_TRIP_SPEED, clamp_world=False
+            )
+            barge_facing_angle = 0.0
+            if reached:
+                barge_trip_phase = "selling"
+                barge_sell_timer = BARGE_SELL_TIME
+                barge_facing_angle = 180.0
+                add_log("Barge reached market")
+
+        elif barge_trip_phase == "selling":
+            # Wait off-screen, turned around.
+            barge_facing_angle = 180.0
+            barge_sell_timer = max(0.0, barge_sell_timer - dt)
+            if barge_sell_timer <= 0.0:
+                sold_units = recycling_inventory
+                base_value = recycling_stock_value if recycling_stock_value > 0 else (sold_units * PLASTIC_SELL_PRICE)
+                guaranteed_floor = sold_units * BARGE_MIN_SELL_PRICE_PER_UNIT
+                sale_multiplier = 1.0 + (fame / 200.0)
+                sold_value = max(base_value, guaranteed_floor) * sale_multiplier
+                if sold_units > 0:
+                    money += sold_value
+                    add_transaction(f"Barge sold {sold_units} trash for ${sold_value:.1f}")
+                recycling_inventory = 0
+                recycling_stock_value = 0.0
+
+                fuel_room = max(0.0, BARGE_FUEL_CAPACITY - barge_fuel_storage)
+                restock_budget = sold_value * BARGE_RESTOCK_BUDGET_RATIO
+                buy_units = min(BARGE_FUEL_RESTOCK_UNITS, fuel_room, restock_budget / max(1e-6, BARGE_FUEL_BUY_PRICE))
+                if buy_units > 0.1:
+                    buy_cost = buy_units * BARGE_FUEL_BUY_PRICE
+                    money -= buy_cost
+                    barge_fuel_storage = min(BARGE_FUEL_CAPACITY, barge_fuel_storage + buy_units)
+                    add_transaction(f"Barge fuel restock +{int(buy_units)} (cost ${buy_cost:.1f})")
+
+                barge_trip_phase = "inbound"
+                add_log("Barge returning")
+
+        elif barge_trip_phase == "inbound":
+            reached, barge_move_dx, barge_move_dy = move_rect_center_toward(
+                BASE_RECT, barge_home_center[0], barge_home_center[1], dt, BARGE_TRIP_SPEED, clamp_world=False
+            )
+            barge_facing_angle = 180.0
+            if reached:
+                BASE_RECT.center = barge_home_center
+                barge_facing_angle = 0.0
+                barge_trip_phase = "idle"
+                add_log("Barge returned")
+                add_transaction("Barge trip complete")
+                for boat in boats:
+                    boat["pending_mode"] = MODE_COLLECT
+                    boat["mode"] = MODE_COLLECT
+                    boat["refuel_lock"] = False
+
         # economy + derived stats
         assigned_total = sum(int(b["crew_assigned"]) for b in boats)
         manpower_cost = ((manpower_cost_per_min + assigned_total * 1.4) / 60.0) * dt
@@ -2002,7 +2529,10 @@ async def run_game() -> None:
         morale_penalty = 3.0 * returning_count
         morale = max(40.0, min(96.0, 68.0 + fame * 0.25 - morale_penalty))
 
-        update_wake(wake_particles, dt)
+        if abs(barge_move_dx) > 1e-4 or abs(barge_move_dy) > 1e-4:
+            maybe_spawn_wave(wave_particles, BASE_RECT, barge_move_dx, barge_move_dy, dt)
+
+        update_wave(wave_particles, dt)
 
         if ocean_tile is not None:
             draw_tiled_ocean(screen, ocean_tile, camera_x, camera_y)
@@ -2013,7 +2543,7 @@ async def run_game() -> None:
         for item in trash_items:
             item.draw(screen, camera_x, camera_y)
 
-        for p in wake_particles:
+        for p in wave_particles:
             p.draw(screen, camera_x, camera_y)
 
         for boat in boats:
@@ -2031,8 +2561,7 @@ async def run_game() -> None:
                 boat_type,
             )
 
-        draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite)
-
+        draw_base_ship(screen, base_font, camera_x, camera_y, mothership_sprite, barge_facing_angle)
         draw_offscreen_target_indicator(
             screen,
             body_font,
@@ -2089,56 +2618,20 @@ async def run_game() -> None:
             transactions,
             menu_scroll,
             fleet_boats,
+            barge_trip_phase,
         )
         menu_scroll = max(0.0, min(menu_scroll, menu_max_scroll))
+
+        if education_modal is not None:
+            education_button_rects = draw_education_modal(screen, body_font, education_modal)
+        else:
+            education_button_rects = {}
 
         if intro_fade_alpha > 0.0:
             fade_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
             fade_overlay.fill((0, 0, 0, int(max(0.0, min(255.0, intro_fade_alpha)))))
             screen.blit(fade_overlay, (0, 0))
             intro_fade_alpha = max(0.0, intro_fade_alpha - 220.0 * dt)
-
-        # Render quiz overlay
-        if show_quiz and quiz_text:
-            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 200))  # Semi-transparent black background
-            
-            # Quiz content - make it scrollable/fit better
-            lines = quiz_text.split('\n')
-            y_offset = 50
-            max_width = WINDOW_WIDTH - 100
-            for line in lines[:25]:  # Limit lines to fit screen
-                if line.strip():
-                    # Word wrap long lines
-                    wrapped_lines = []
-                    words = line.split(' ')
-                    current_line = ""
-                    for word in words:
-                        test_line = current_line + " " + word if current_line else word
-                        if body_font.size(test_line)[0] <= max_width:
-                            current_line = test_line
-                        else:
-                            if current_line:
-                                wrapped_lines.append(current_line)
-                            current_line = word
-                    if current_line:
-                        wrapped_lines.append(current_line)
-                    
-                    for wrapped_line in wrapped_lines:
-                        text_surf = body_font.render(wrapped_line, True, (255, 255, 255))
-                        overlay.blit(text_surf, (50, y_offset))
-                        y_offset += 22
-                else:
-                    y_offset += 10
-                
-                if y_offset > WINDOW_HEIGHT - 100:  # Prevent overflow
-                    break
-            
-            # Close instruction
-            close_text = body_font.render("Press ESC to close quiz", True, (200, 200, 200))
-            overlay.blit(close_text, (WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT - 50))
-            
-            screen.blit(overlay, (0, 0))
 
         apply_pixelation(screen, VIEWPORT_RECT)
         pygame.display.flip()
