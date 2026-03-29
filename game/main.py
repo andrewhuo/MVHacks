@@ -25,6 +25,11 @@ try:
 except ImportError:
     from intro import play_intro
 
+try:
+    from .services import generate_ocean_cleanup_quiz, display_quiz
+except ImportError:
+    from services import generate_ocean_cleanup_quiz, display_quiz
+
 
 
 # Window layout
@@ -878,6 +883,15 @@ def draw_sidebar(
         "- / + = Crew Allocate",
     ], 2)
 
+    # Quiz button
+    quiz_btn_rect = pygame.Rect(8, y, content_w - 16, 40)
+    pygame.draw.rect(content, (126, 93, 60), quiz_btn_rect)
+    pygame.draw.rect(content, (170, 136, 95), quiz_btn_rect, width=1)
+    quiz_text = body_font.render("Take Ocean Quiz", True, (255, 255, 255))
+    content.blit(quiz_text, (quiz_btn_rect.x + 20, quiz_btn_rect.y + 10))
+    mode_buttons_content["quiz"] = quiz_btn_rect
+    y += 52
+
     # Fleet panel: one row per boat + action buttons
     fleet_top = y
     row_h = 90
@@ -1425,6 +1439,11 @@ async def run_game() -> None:
     recycling_stock_value = 0.0
     barge_fuel_storage = BARGE_FUEL_START
 
+    # Quiz state
+    quiz_questions = []
+    show_quiz = False
+    quiz_text = ""
+
     boat_layout = [
         ("Speedboat", (95, -70)),
     ]
@@ -1494,8 +1513,12 @@ async def run_game() -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    if show_quiz:
+                        show_quiz = False
+                    else:
+                        running = False
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if event.pos[0] < SIDEBAR_WIDTH:
                     for button_key, rect in mode_button_rects.items():
@@ -1547,6 +1570,13 @@ async def run_game() -> None:
                         label = "Return" if requested_mode == MODE_STOP else requested_mode.title()
                         add_log(f"Boat {boat_id} command queued: {label} (refuel first)")
                         add_transaction(f"Boat {boat_id} queued -> {label} (refuel)")
+                        break
+                    # Handle quiz button
+                    if "quiz" in mode_button_rects and mode_button_rects["quiz"].collidepoint(event.pos):
+                        if not quiz_questions:
+                            quiz_questions = generate_ocean_cleanup_quiz(5)
+                        quiz_text = display_quiz(quiz_questions)
+                        show_quiz = True
                         break
                 elif VIEWPORT_RECT.collidepoint(event.pos):
                     dragging = True
@@ -2057,6 +2087,48 @@ async def run_game() -> None:
             fade_overlay.fill((0, 0, 0, int(max(0.0, min(255.0, intro_fade_alpha)))))
             screen.blit(fade_overlay, (0, 0))
             intro_fade_alpha = max(0.0, intro_fade_alpha - 220.0 * dt)
+
+        # Render quiz overlay
+        if show_quiz and quiz_text:
+            overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 200))  # Semi-transparent black background
+            
+            # Quiz content - make it scrollable/fit better
+            lines = quiz_text.split('\n')
+            y_offset = 50
+            max_width = WINDOW_WIDTH - 100
+            for line in lines[:25]:  # Limit lines to fit screen
+                if line.strip():
+                    # Word wrap long lines
+                    wrapped_lines = []
+                    words = line.split(' ')
+                    current_line = ""
+                    for word in words:
+                        test_line = current_line + " " + word if current_line else word
+                        if body_font.size(test_line)[0] <= max_width:
+                            current_line = test_line
+                        else:
+                            if current_line:
+                                wrapped_lines.append(current_line)
+                            current_line = word
+                    if current_line:
+                        wrapped_lines.append(current_line)
+                    
+                    for wrapped_line in wrapped_lines:
+                        text_surf = body_font.render(wrapped_line, True, (255, 255, 255))
+                        overlay.blit(text_surf, (50, y_offset))
+                        y_offset += 22
+                else:
+                    y_offset += 10
+                
+                if y_offset > WINDOW_HEIGHT - 100:  # Prevent overflow
+                    break
+            
+            # Close instruction
+            close_text = body_font.render("Press ESC to close quiz", True, (200, 200, 200))
+            overlay.blit(close_text, (WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT - 50))
+            
+            screen.blit(overlay, (0, 0))
 
         apply_pixelation(screen, VIEWPORT_RECT)
         pygame.display.flip()
