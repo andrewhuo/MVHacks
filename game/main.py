@@ -94,6 +94,7 @@ BARGE_FUEL_START = BARGE_FUEL_CAPACITY
 BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC = 6.0
 BARGE_FUEL_BUY_PRICE = 1.6
 HEAVY_SELL_FUEL_REBUY_UNITS = 240.0
+SPEEDBOAT_PURCHASE_COST = 650.0
 
 # Big base ship in world corner
 BASE_RECT = pygame.Rect(WORLD_WIDTH // 2 - 330, WORLD_HEIGHT // 2 - 195, 660, 390)
@@ -116,23 +117,17 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 OCEAN_TILE_PATH = ASSETS_DIR / "ocean.jpeg"
 OCEAN_TILE_SCALE = 0.4
 SPEEDBOAT_SPRITE_PATH = ASSETS_DIR / "smallboat.png"
-SAILBOAT_SPRITE_PATH = ASSETS_DIR / "sailboat.png"
 TUGBOAT_SPRITE_PATH = ASSETS_DIR / "tuboat.png"
-HOVERBOAT_SPRITE_PATH = ASSETS_DIR / "hoverboat.png"
 BOAT_GUIDE_PATH_BY_TYPE = {
     "Speedboat": ASSETS_DIR / "smallboat_guide.png",
-    "Sailboat": ASSETS_DIR / "sailboat_guide.png",
     "Tugboat": ASSETS_DIR / "tuboat_guide.png",
-    "Hoverboat": ASSETS_DIR / "hoverboat_guide.png",
 }
 MOTHERSHIP_GUIDE_PATH = ASSETS_DIR / "mothership_guide.png"
 BOAT_SPRITE_SCALE = 1.0 * WORLD_ENTITY_SCALE
 BOAT_SPRITE_ANGLE_OFFSET = 90.0  # default offset
 BOAT_SPRITE_ANGLE_OFFSET_BY_TYPE = {
     "Speedboat": 90.0,
-    "Sailboat": 90.0,
-    "Tugboat": 90.0,
-    "Hoverboat": 90.0,
+    "Tugboat": 0.0,
 }
 SPEEDBOAT_DIRECT_SCALE = 1.12
 MOTHERSHIP_SPRITE_PATH = ASSETS_DIR / "mothership.png"
@@ -192,44 +187,32 @@ BOAT_TYPE = "Speedboat"
 # - Heavy workboat speed/crew from multicat workboat profiles (~9 knots, multi-crew).
 # - Hovercraft dimensions from Griffon commercial hovercraft class specs.
 BOAT_CAPACITY_BY_TYPE = {
-    "Speedboat": 12,
-    "Sailboat": 16,
+    "Speedboat": 64,
     "Tugboat": 28,
-    "Hoverboat": 20,
 }
 BOAT_CREW_MIN_BY_TYPE = {
-    "Speedboat": 1,
-    "Sailboat": 2,
+    "Speedboat": 0,
     "Tugboat": 2,
-    "Hoverboat": 2,
 }
 BOAT_CREW_MAX_BY_TYPE = {
-    "Speedboat": 2,
-    "Sailboat": 4,
+    "Speedboat": 0,
     "Tugboat": 4,
-    "Hoverboat": 3,
 }
 BOAT_REFUEL_SECONDS_BY_TYPE = {
-    "Speedboat": 3.2,
-    "Sailboat": 4.0,
+    "Speedboat": 4.8,
     "Tugboat": 6.0,
-    "Hoverboat": 4.5,
 }
 
 # Speeds are scaled to in-game pixels/sec from approximate knot classes.
 BOAT_SPEED_BY_TYPE = {
     "Speedboat": 145.0,
-    "Sailboat": 34.0,
     "Tugboat": 52.0,
-    "Hoverboat": 165.0,
 }
 
 # In-game hull sizes use the same global world scale for all boats.
 BOAT_BASE_SIZE_BY_TYPE = {
     "Speedboat": (18, 10),
-    "Sailboat": (22, 11),
     "Tugboat": (32, 15),
-    "Hoverboat": (24, 12),
 }
 BOAT_SIZE_BY_TYPE = {
     boat_type: (
@@ -242,26 +225,41 @@ BOAT_SIZE_BY_TYPE = {
 # Sprite display multipliers (applied to BOAT_SIZE_BY_TYPE for visual tuning).
 BOAT_SPRITE_SIZE_MULT_BY_TYPE = {
     "Speedboat": 1.0,
-    "Sailboat": 7.2,
     "Tugboat": 8.2,
-    "Hoverboat": 7.0,
 }
 
 BOAT_COLOR_BY_TYPE = {
-    "Sailboat": (238, 226, 188),
     "Speedboat": (245, 192, 50),
     "Tugboat": (208, 142, 76),
-    "Hoverboat": (166, 220, 214),
 }
 
-# Vehicle catalog from info.rtf (for progression/planning UI).
 VEHICLE_TYPES = [
-    {"name": "Sailboat", "category": "Boat", "crew_min": 2, "crew_max": 4},
-    {"name": "Speedboat", "category": "Boat", "crew_min": 1, "crew_max": 2},
-    {"name": "Hoverboat", "category": "Boat", "crew_min": 2, "crew_max": 3},
+    {"name": "Speedboat", "category": "Boat", "crew_min": 0, "crew_max": 0},
     {"name": "Tugboat", "category": "Boat", "crew_min": 2, "crew_max": 4},
-    {"name": "Helicopter", "category": "Vehicle", "crew_min": 1, "crew_max": 4},
 ]
+
+
+def display_boat_type(boat_type: str) -> str:
+    if boat_type == "Speedboat":
+        return "Boat"
+    return boat_type
+
+
+def required_speedboat_fuel_seconds(speed: float) -> float:
+    points = [
+        (0, 0),
+        (WORLD_WIDTH // 2, 0),
+        (WORLD_WIDTH - 1, 0),
+        (0, WORLD_HEIGHT // 2),
+        (WORLD_WIDTH - 1, WORLD_HEIGHT // 2),
+        (0, WORLD_HEIGHT - 1),
+        (WORLD_WIDTH // 2, WORLD_HEIGHT - 1),
+        (WORLD_WIDTH - 1, WORLD_HEIGHT - 1),
+    ]
+    max_dist = 0.0
+    for px, py in points:
+        max_dist = max(max_dist, math.hypot(BASE_RECT.centerx - px, BASE_RECT.centery - py))
+    return (max_dist / max(1e-6, speed)) + 2.0
 
 
 def clamp_camera(camera_x: float, camera_y: float) -> tuple[float, float]:
@@ -358,9 +356,7 @@ def load_boat_sprite() -> pygame.Surface | None:
 def load_boat_sprites() -> dict[str, pygame.Surface]:
     path_map = {
         "Speedboat": SPEEDBOAT_SPRITE_PATH,
-        "Sailboat": SAILBOAT_SPRITE_PATH,
         "Tugboat": TUGBOAT_SPRITE_PATH,
-        "Hoverboat": HOVERBOAT_SPRITE_PATH,
     }
     sprites: dict[str, pygame.Surface] = {}
     for boat_type, path in path_map.items():
@@ -973,6 +969,8 @@ def draw_sidebar(
     menu_scroll: float,
     fleet_boats: list[dict[str, object]],
     barge_trip_phase: str,
+    boat_purchase_cost: float,
+    can_buy_boat: bool,
 ) -> tuple[float, dict[str, pygame.Rect]]:
     panel = pygame.Rect(0, 0, SIDEBAR_WIDTH, WINDOW_HEIGHT)
 
@@ -1072,7 +1070,6 @@ def draw_sidebar(
     ], 0)
 
     y, barge_card_rect = draw_card(y, "Barge", [
-        f"Crew At Barge: {crew_available}/{crew_total}",
         f"Trash Stock: {recycling_inventory}/{BARGE_TRASH_CAPACITY}",
         f"Ops Spend/min: ${total_cost_per_min:.1f}",
         f"Fuel Spend/min: ${fuel_cost_per_min:.1f}",
@@ -1120,11 +1117,26 @@ def draw_sidebar(
     if sell_enabled:
         mode_buttons_content["barge:selltrash"] = sell_btn
 
+    y, buy_boat_card = draw_card(y, "Buy More Boats", [
+        "Add 1 Boat",
+        f"Cost: ${int(boat_purchase_cost)}",
+    ], 3)
+
+    buy_boat_btn = pygame.Rect(buy_boat_card.x + 12, buy_boat_card.bottom - 30, min(content_w - 24, 152), 20)
+    buy_fill = (102, 75, 50) if can_buy_boat else (86, 68, 49)
+    buy_border = (154, 122, 86) if can_buy_boat else (122, 96, 70)
+    buy_color = (255, 255, 255) if can_buy_boat else (200, 188, 170)
+    pygame.draw.rect(content, buy_fill, buy_boat_btn)
+    pygame.draw.rect(content, buy_border, buy_boat_btn, width=1)
+    buy_boat_lbl = body_font.render(f"Buy Boat (${int(boat_purchase_cost)})", False, buy_color)
+    content.blit(buy_boat_lbl, (buy_boat_btn.x + (buy_boat_btn.width - buy_boat_lbl.get_width()) // 2, buy_boat_btn.y + 2))
+    if can_buy_boat:
+        mode_buttons_content["fleet:buyboat"] = buy_boat_btn
+
     y, _ = draw_card(y, "Control Key", [
         "C = Collect",
         "S = Sell",
         "R = Return To Barge",
-        "- / + = Crew Allocate",
     ], 2)
 
     # Fleet panel: one row per boat + action buttons
@@ -1147,48 +1159,22 @@ def draw_sidebar(
 
         boat_id = int(boat.get("id", i + 1))
         boat_type = str(boat.get("type", "Boat"))
+        boat_display_type = display_boat_type(boat_type)
         status = str(boat.get("status", "Idle"))
         mode = str(boat.get("mode", MODE_COLLECT))
-        crew_assigned = int(boat.get("crew_assigned", 0))
-        crew_min = int(boat.get("crew_min", 0))
-        crew_max = int(boat.get("crew_max", crew_min))
-
         actions = [("collect", "C"), ("return", "R")]
-        at_barge_for_crew = bool(boat.get("docked", False))
         btn_w = 24
         btn_h = 20
-        crew_btns = [("crew_minus", "-"), ("crew_plus", "+")]
-        crew_btn_w = 18
-        crew_gap = 3
         action_w = len(actions) * (btn_w + 4)
-        crew_w = len(crew_btns) * (crew_btn_w + crew_gap)
-        start_x = row_rect.right - action_w - crew_w - 12
+        start_x = row_rect.right - action_w - 12
 
-        name_surf = body_font.render(f"B{boat_id} {boat_type}", False, (255, 255, 255))
+        name_surf = body_font.render(f"B{boat_id} {boat_display_type}", False, (255, 255, 255))
         content.blit(name_surf, (row_rect.x + 6, row_rect.y + 3))
-
-        crew_surf = body_font.render(f"Crew {crew_assigned} [{crew_min}-{crew_max}]", False, (240, 232, 220))
-        content.blit(crew_surf, (row_rect.x + 6, row_rect.y + 20))
 
         # Controls stay beside the boat row header, not below it.
         controls_y = row_rect.y + 12
 
-        crew_start_x = start_x
-        for j, (action, short) in enumerate(crew_btns):
-            bx = crew_start_x + j * (crew_btn_w + crew_gap)
-            by = controls_y
-            brect = pygame.Rect(bx, by, crew_btn_w, btn_h)
-            crew_fill = (102, 75, 50) if at_barge_for_crew else (86, 68, 49)
-            crew_outline = (154, 122, 86) if at_barge_for_crew else (122, 96, 70)
-            txt_color = (255, 255, 255) if at_barge_for_crew else (200, 188, 170)
-            pygame.draw.rect(content, crew_fill, brect)
-            pygame.draw.rect(content, crew_outline, brect, width=1)
-            txt = body_font.render(short, False, txt_color)
-            content.blit(txt, (brect.x + 5, brect.y + 2))
-            if at_barge_for_crew:
-                mode_buttons_content[f"{boat_id}:{action}"] = brect
-
-        action_start_x = crew_start_x + crew_w + 6
+        action_start_x = start_x
         for j, (action, short) in enumerate(actions):
             bx = action_start_x + j * (btn_w + 4)
             by = controls_y
@@ -1229,15 +1215,13 @@ def draw_sidebar(
     for i, boat in enumerate(fleet_boats):
         boat_id = int(boat.get("id", i + 1))
         boat_type = str(boat.get("type", "Boat"))
+        boat_display_type = display_boat_type(boat_type)
         status = str(boat.get("status", "Idle"))
         fuel_seconds = float(boat.get("fuel_seconds", 0.0))
         max_fuel = float(boat.get("max_fuel", MAX_FUEL_SECONDS))
         refuel_left = float(boat.get("refuel_seconds_left", 0.0))
         refuel_total = float(boat.get("refuel_total", REFUEL_SECONDS))
         is_refueling = bool(boat.get("is_refueling", False))
-        crew_min = int(boat.get("crew_min", 1))
-        crew_max = int(boat.get("crew_max", crew_min))
-        crew_assigned = int(boat.get("crew_assigned", 0))
         cargo = int(boat.get("cargo", 0))
         capacity = int(boat.get("capacity", 0))
         collected_by_boat = int(boat.get("collected", collected))
@@ -1255,11 +1239,8 @@ def draw_sidebar(
         content.blit(title, (10, y + 8))
 
         ty = y + 30
-        l1 = body_font.render(f"Type: {boat_type}", False, MUTED_TEXT)
-        l3 = body_font.render(f"Crew: {crew_assigned} (min {crew_min}, max {crew_max})", False, MUTED_TEXT)
+        l1 = body_font.render(f"Type: {boat_display_type}", False, MUTED_TEXT)
         content.blit(l1, (10, ty))
-        ty += 18
-        content.blit(l3, (10, ty))
         ty += 18
 
         for line in status_lines:
@@ -1296,6 +1277,7 @@ def draw_sidebar(
         f"Manpower/min: ${manpower_cost_per_min:.1f}",
         f"Fuel/min: ${fuel_cost_per_min:.1f}",
         f"General/min: ${general_cost_per_min:.1f}",
+        f"Boat Purchase: ${int(boat_purchase_cost)}",
         f"Total/min: ${total_cost_per_min:.1f}",
     ], 1)
 
@@ -1547,6 +1529,7 @@ def maybe_spawn_wave(
     move_dx: float,
     move_dy: float,
     dt: float,
+    centered: bool = False,
 ) -> None:
     speed = math.hypot(move_dx, move_dy)
     if speed < 0.2:
@@ -1558,9 +1541,13 @@ def maybe_spawn_wave(
     direction_x = move_dx / max(speed, 1e-6)
     direction_y = move_dy / max(speed, 1e-6)
 
-    # Trail starts behind the boat.
-    base_x = cx - direction_x * (boat_rect.width * 0.5)
-    base_y = cy - direction_y * (boat_rect.height * 0.5)
+    if centered:
+        base_x = cx
+        base_y = cy
+    else:
+        # Trail starts behind the boat.
+        base_x = cx - direction_x * (boat_rect.width * 0.5)
+        base_y = cy - direction_y * (boat_rect.height * 0.5)
 
     for _ in range(min(spawn_count, 16)):
         jitter_x = random.uniform(-6.0, 6.0)
@@ -1888,7 +1875,7 @@ async def run_game() -> None:
     # Economy + management
     money = 1200.0
     fame = 8.0
-    crew_total = 5
+    crew_total = 0
     manpower_cost_per_min = 24.0
     fuel_cost_per_min = 12.0
     general_cost_per_min = 6.0
@@ -1937,6 +1924,8 @@ async def run_game() -> None:
     show_dock_debug = SHOW_DOCK_DEBUG_DEFAULT
 
     offscreen_spawn_timer = 0.0
+    win_active = False
+    win_fade_alpha = 0.0
 
     recycling_inventory = 0
     recycling_stock_value = 0.0
@@ -1951,8 +1940,8 @@ async def run_game() -> None:
     if TUGBOAT_SPRITE_PATH.exists():
         try:
             tug_raw = pygame.image.load(str(TUGBOAT_SPRITE_PATH)).convert_alpha()
-            tw = max(70, int(tug_raw.get_width() * 1.55))
-            th = max(36, int(tug_raw.get_height() * 1.55))
+            tw = max(16, int(tug_raw.get_width() * 0.2))
+            th = max(10, int(tug_raw.get_height() * 0.2))
             transport_sprite = pygame.transform.scale(tug_raw, (tw, th))
         except pygame.error:
             transport_sprite = boat_sprites.get("Tugboat")
@@ -1978,6 +1967,11 @@ async def run_game() -> None:
         "mission": "sell",
     }
 
+    speedboat_max_fuel = max(
+        MAX_FUEL_SECONDS * 3.0,
+        required_speedboat_fuel_seconds(BOAT_SPEED_BY_TYPE.get("Speedboat", BOAT_SPEED)) * 2.0,
+    )
+
     boat_layout = [
         ("Speedboat", (95, -70)),
     ]
@@ -1990,8 +1984,8 @@ async def run_game() -> None:
         boat_rect.center = (BASE_RECT.centerx + offset[0], BASE_RECT.centery + offset[1])
         boat_rect.clamp_ip(WORLD_RECT)
 
-        crew_min = BOAT_CREW_MIN_BY_TYPE.get(boat_type, 1)
-        crew_max = BOAT_CREW_MAX_BY_TYPE.get(boat_type, max(1, crew_min))
+        crew_min = 0
+        crew_max = 0
 
         boats.append({
             "id": idx,
@@ -2003,13 +1997,14 @@ async def run_game() -> None:
             "state": STATE_COLLECTING,
             "status": "Initializing",
             "speed": BOAT_SPEED_BY_TYPE.get(boat_type, BOAT_SPEED),
-            "fuel": MAX_FUEL_SECONDS,
+            "fuel": speedboat_max_fuel if boat_type == "Speedboat" else MAX_FUEL_SECONDS,
             "refuel_left": 0.0,
             "refuel_total": max(MIN_REFUEL_SECONDS, BOAT_REFUEL_SECONDS_BY_TYPE.get(boat_type, REFUEL_SECONDS)),
             "capacity": BOAT_CAPACITY_BY_TYPE.get(boat_type, 20),
+            "max_fuel": speedboat_max_fuel if boat_type == "Speedboat" else MAX_FUEL_SECONDS,
             "crew_min": crew_min,
             "crew_max": crew_max,
-            "crew_assigned": 1 if (idx == 1 and crew_min <= 1) else (crew_min if idx == 1 else 0),
+            "crew_assigned": 0,
             "trash_stored": 0,
             "cargo_sale_value": 0.0,
             "collected_total": 0,
@@ -2024,6 +2019,59 @@ async def run_game() -> None:
             "dock_guide": boat_dock_guides.get(boat_type),
             "visual_size": boat_sprites.get(boat_type).get_size() if boat_sprites.get(boat_type) is not None else (bw, bh),
         })
+
+    def add_speedboat() -> bool:
+        nonlocal money, boats
+        if money + 1e-6 < SPEEDBOAT_PURCHASE_COST:
+            return False
+
+        next_id = (max((int(b.get("id", 0)) for b in boats), default=0) + 1)
+        bw, bh = BOAT_SIZE_BY_TYPE.get("Speedboat", BOAT_SIZE)
+        spawn_r = 130 + (next_id % 3) * 26
+        spawn_theta = (next_id * 0.95) % (2.0 * math.pi)
+        boat_rect = pygame.Rect(0, 0, bw, bh)
+        boat_rect.center = (
+            int(BASE_RECT.centerx + math.cos(spawn_theta) * spawn_r),
+            int(BASE_RECT.centery + math.sin(spawn_theta) * spawn_r),
+        )
+        boat_rect.clamp_ip(WORLD_RECT)
+
+        boats.append({
+            "id": next_id,
+            "type": "Speedboat",
+            "rect": boat_rect,
+            "mode": MODE_COLLECT,
+            "pending_mode": MODE_COLLECT,
+            "refuel_lock": False,
+            "state": STATE_COLLECTING,
+            "status": "Collecting",
+            "speed": BOAT_SPEED_BY_TYPE.get("Speedboat", BOAT_SPEED),
+            "fuel": speedboat_max_fuel,
+            "max_fuel": speedboat_max_fuel,
+            "refuel_left": 0.0,
+            "refuel_total": max(MIN_REFUEL_SECONDS, BOAT_REFUEL_SECONDS_BY_TYPE.get("Speedboat", REFUEL_SECONDS)),
+            "capacity": BOAT_CAPACITY_BY_TYPE.get("Speedboat", 20),
+            "crew_min": 0,
+            "crew_max": 0,
+            "crew_assigned": 0,
+            "trash_stored": 0,
+            "cargo_sale_value": 0.0,
+            "collected_total": 0,
+            "visible": True,
+            "facing_angle": 0.0,
+            "sell_phase": "idle",
+            "sell_timer": 0.0,
+            "pending_sale_revenue": 0.0,
+            "pending_sale_units": 0,
+            "dock_slot": None,
+            "docked": False,
+            "dock_guide": boat_dock_guides.get("Speedboat"),
+            "visual_size": boat_sprites.get("Speedboat").get_size() if boat_sprites.get("Speedboat") is not None else (bw, bh),
+        })
+        money -= SPEEDBOAT_PURCHASE_COST
+        add_log(f"Boat {next_id} purchased")
+        add_transaction(f"Bought Boat {next_id} -${SPEEDBOAT_PURCHASE_COST:.1f}")
+        return True
 
     def add_log(msg: str) -> None:
         nonlocal event_log, elapsed_seconds
@@ -2130,6 +2178,13 @@ async def run_game() -> None:
                             add_transaction("Sell request queued")
                             break
 
+                        if button_key == "fleet:buyboat":
+                            if add_speedboat():
+                                pass
+                            else:
+                                add_log("Not enough money to buy a boat")
+                            break
+
                         if button_key == "barge:buyfuel":
                             barge_buy_fuel_requested = True
                             add_log("Tugboat transport fuel buy requested")
@@ -2145,28 +2200,6 @@ async def run_game() -> None:
                         boat = next((b for b in boats if int(b["id"]) == boat_id), None)
                         if boat is None:
                             continue
-
-                        assigned_total = sum(int(b["crew_assigned"]) for b in boats)
-
-                        at_barge_for_crew = bool(boat.get("docked", False))
-
-                        if action == "crew_minus":
-                            if not at_barge_for_crew:
-                                add_log(f"Boat {boat_id} must be at barge to change crew")
-                                break
-                            if int(boat["crew_assigned"]) > 0:
-                                boat["crew_assigned"] = int(boat["crew_assigned"]) - 1
-                                add_log(f"Boat {boat_id} crew decreased to {boat['crew_assigned']}")
-                            break
-
-                        if action == "crew_plus":
-                            if not at_barge_for_crew:
-                                add_log(f"Boat {boat_id} must be at barge to change crew")
-                                break
-                            if int(boat["crew_assigned"]) < int(boat["crew_max"]) and assigned_total < crew_total:
-                                boat["crew_assigned"] = int(boat["crew_assigned"]) + 1
-                                add_log(f"Boat {boat_id} crew increased to {boat['crew_assigned']}")
-                            break
 
                         if action == "sell" and str(boat.get("type", "")) != "Tugboat":
                             add_log(f"Boat {boat_id}: sell mode is transfer-boat only")
@@ -2292,29 +2325,6 @@ async def run_game() -> None:
                     add_log("Tugboat inbound to buy fuel")
                     add_transaction("Tugboat fuel dispatch")
 
-        offscreen_spawn_timer += dt
-        if offscreen_spawn_timer >= OFFSCREEN_SPAWN_INTERVAL:
-            offscreen_spawn_timer = 0.0
-            if len(trash_items) < MAX_TRASH_ITEMS:
-                if random.random() < 0.72:
-                    patch_size = random.randint(OFFSCREEN_PATCH_MIN, OFFSCREEN_PATCH_MAX)
-                    spawn_trash_patch(
-                        trash_items,
-                        trash_sprites,
-                        camera_x,
-                        camera_y,
-                        patch_size,
-                        spread=random.randint(75, 145),
-                    )
-                else:
-                    spawn_offscreen_trash(
-                        trash_items,
-                        trash_sprites,
-                        camera_x,
-                        camera_y,
-                        random.randint(2, 5),
-                    )
-
         for item in trash_items:
             item.update(dt)
         update_clear_clouds(clear_clouds, dt)
@@ -2334,6 +2344,7 @@ async def run_game() -> None:
             boat_state = str(boat["state"])
             boat_speed = float(boat["speed"])
             fuel_seconds = float(boat["fuel"])
+            boat_max_fuel = float(boat.get("max_fuel", MAX_FUEL_SECONDS))
             refuel_seconds_left = float(boat["refuel_left"])
             boat_refuel_seconds = float(boat["refuel_total"])
             boat_capacity = int(boat["capacity"])
@@ -2362,17 +2373,9 @@ async def run_game() -> None:
             gained_score = 0
             gained_sale_value = 0.0
 
-            has_operating_crew = crew_assigned >= crew_min
+            has_operating_crew = True
 
-            if not has_operating_crew:
-                boat_visible = True
-                sell_phase = "idle"
-                if refuel_seconds_left > 0.0:
-                    refuel_seconds_left = 0.0
-                boat_state = STATE_COLLECTING
-                boat_status = f"Need crew ({crew_assigned}/{crew_min})"
-
-            elif refuel_lock_active:
+            if refuel_lock_active:
                 boat_visible = True
                 sell_phase = "idle"
                 slot = get_or_assign_dock_slot(boat, boats, dock_spots)
@@ -2403,7 +2406,7 @@ async def run_game() -> None:
                         cargo_sale_value = 0.0
                         add_transaction(f"Boat {boat_id} stocked +{dropped_off} units")
 
-                    if fuel_seconds < (MAX_FUEL_SECONDS - 1e-3):
+                    if fuel_seconds < (boat_max_fuel - 1e-3):
                         if boat_state != STATE_REFUELING and refuel_seconds_left <= 0.0:
                             boat_state = STATE_REFUELING
                             refuel_seconds_left = boat_refuel_seconds
@@ -2412,10 +2415,10 @@ async def run_game() -> None:
                         boat_status = f"Refueling before {mode_label} ({max(0.0, refuel_seconds_left):.1f}s)"
                         refuel_seconds_left -= dt
                         if refuel_seconds_left <= 0.0:
-                            required_units = max(0.0, (MAX_FUEL_SECONDS - fuel_seconds) * BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC)
+                            required_units = max(0.0, (boat_max_fuel - fuel_seconds) * BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC)
                             if barge_fuel_storage + 1e-6 >= required_units:
                                 barge_fuel_storage = max(0.0, barge_fuel_storage - required_units)
-                                fuel_seconds = MAX_FUEL_SECONDS
+                                fuel_seconds = boat_max_fuel
                                 refuel_seconds_left = 0.0
                                 boat_state = STATE_COLLECTING
                                 refuel_lock_active = False
@@ -2495,10 +2498,10 @@ async def run_game() -> None:
                     boat_status = f"Refueling ({max(0.0, refuel_seconds_left):.1f}s)"
                     refuel_seconds_left -= dt
                     if refuel_seconds_left <= 0.0:
-                        required_units = max(0.0, (MAX_FUEL_SECONDS - fuel_seconds) * BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC)
+                        required_units = max(0.0, (boat_max_fuel - fuel_seconds) * BARGE_FUEL_UNITS_PER_BOAT_FUEL_SEC)
                         if barge_fuel_storage + 1e-6 >= required_units:
                             barge_fuel_storage = max(0.0, barge_fuel_storage - required_units)
-                            fuel_seconds = MAX_FUEL_SECONDS
+                            fuel_seconds = boat_max_fuel
                             refuel_seconds_left = 0.0
                             boat_state = STATE_COLLECTING
                         else:
@@ -2679,7 +2682,7 @@ async def run_game() -> None:
                 "status": boat_status,
                 "state": boat_state,
                 "fuel_seconds": fuel_seconds,
-                "max_fuel": MAX_FUEL_SECONDS,
+                "max_fuel": boat_max_fuel,
                 "refuel_seconds_left": float(boat["refuel_left"]),
                 "refuel_total": boat_refuel_seconds,
                 "is_refueling": boat_state == STATE_REFUELING,
@@ -2778,8 +2781,8 @@ async def run_game() -> None:
         else:
             barge_trip_phase = "idle"
         # economy + derived stats
-        assigned_total = sum(int(b["crew_assigned"]) for b in boats)
-        manpower_cost = ((manpower_cost_per_min + assigned_total * 1.4) / 60.0) * dt
+        assigned_total = 0
+        manpower_cost = (manpower_cost_per_min / 60.0) * dt
         fuel_cost = ((fuel_cost_per_min + len(boats) * 1.1) / 60.0) * dt
         general_cost = (general_cost_per_min / 60.0) * dt
         frame_cost = manpower_cost + fuel_cost + general_cost
@@ -2790,7 +2793,7 @@ async def run_game() -> None:
         if cost_transaction_timer >= cost_transaction_interval:
             add_transaction(
                 f"Ops costs -${pending_cost_total:.1f} "
-                f"(crew -${((manpower_cost_per_min + assigned_total * 1.4) / 60.0 * cost_transaction_timer):.1f}, "
+                f"(crew -${(manpower_cost_per_min / 60.0 * cost_transaction_timer):.1f}, "
                 f"fuel -${((fuel_cost_per_min + len(boats) * 1.1) / 60.0 * cost_transaction_timer):.1f}, "
                 f"general -${(general_cost_per_min / 60.0 * cost_transaction_timer):.1f})"
             )
@@ -2801,7 +2804,7 @@ async def run_game() -> None:
         if abs(transport_move_dx) > 1e-4 or abs(transport_move_dy) > 1e-4:
             tr = heavy_transport["rect"]
             assert isinstance(tr, pygame.Rect)
-            maybe_spawn_wave(wave_particles, tr, transport_move_dx, transport_move_dy, dt)
+            maybe_spawn_wave(wave_particles, tr, transport_move_dx, transport_move_dy, dt, centered=True)
 
         update_wave(wave_particles, dt)
 
@@ -2860,7 +2863,7 @@ async def run_game() -> None:
         for boat in fleet_boats:
             bx = int(boat.get("world_x", BASE_RECT.centerx))
             by = int(boat.get("world_y", BASE_RECT.centery))
-            label = f"{boat.get('type', 'Boat')} {boat.get('id', '?')}"
+            label = f"{display_boat_type(str(boat.get('type', 'Boat')))} {boat.get('id', '?')}"
             draw_offscreen_target_indicator(
                 screen,
                 body_font,
@@ -2876,7 +2879,18 @@ async def run_game() -> None:
         draw_clear_clouds(screen, clear_clouds, camera_x, camera_y)
 
         total_trash_stored = sum(int(b["trash_stored"]) for b in boats)
-        crew_available = max(0, crew_total - assigned_total)
+        crew_available = 0
+
+        if (
+            (not win_active)
+            and len(trash_items) == 0
+            and total_trash_stored <= 0
+            and recycling_inventory <= 0
+            and (not bool(heavy_transport.get("active", False)))
+        ):
+            win_active = True
+            add_log("All trash cleared - mission complete")
+            add_transaction("Victory: Ocean cleaned")
 
         menu_max_scroll, mode_button_rects = draw_sidebar(
             screen,
@@ -2902,6 +2916,8 @@ async def run_game() -> None:
             menu_scroll,
             fleet_boats,
             barge_trip_phase,
+            SPEEDBOAT_PURCHASE_COST,
+            money + 1e-6 >= SPEEDBOAT_PURCHASE_COST,
         )
         menu_scroll = max(0.0, min(menu_scroll, menu_max_scroll))
 
@@ -2917,6 +2933,15 @@ async def run_game() -> None:
             fade_overlay.fill((0, 0, 0, int(max(0.0, min(255.0, intro_fade_alpha)))))
             screen.blit(fade_overlay, (0, 0))
             intro_fade_alpha = max(0.0, intro_fade_alpha - 220.0 * dt)
+
+        if win_active:
+            win_fade_alpha = min(255.0, win_fade_alpha + 145.0 * frame_dt)
+            win_overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            win_overlay.fill((0, 0, 0, int(win_fade_alpha)))
+            screen.blit(win_overlay, (0, 0))
+            if win_fade_alpha >= 185.0:
+                win_text = body_font.render("You Won!", False, (255, 255, 255))
+                screen.blit(win_text, (WINDOW_WIDTH // 2 - win_text.get_width() // 2, WINDOW_HEIGHT // 2 - win_text.get_height() // 2))
 
         apply_pixelation(screen, VIEWPORT_RECT)
         pygame.display.flip()
