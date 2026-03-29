@@ -1,155 +1,178 @@
+from __future__ import annotations
+
+import asyncio
+import json
 import os
-import google.genai as genai
+import sys
+import urllib.error
+import urllib.request
+from typing import Any
 
-# Configure Gemini API
-# (Temporary direct key storage for local testing only; replace with env var in production)
-API_KEY = "AIzaSyDeZbXRD3wcPu3bRwCN5ZTWNQRCbM-X1DM"
-if API_KEY:
-    client = genai.Client(api_key=API_KEY)
-else:
-    print("Warning: API_KEY is not set. Quiz functionality will not work.")
-    client = None
+# Env var first; hackathon fallback key keeps local testing fast.
+API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDeZbXRD3wcPu3bRwCN5ZTWNQRCbM-X1DM").strip()
 
-def _select_supported_model() -> str | None:
-    if not client:
-        return None
+DEFAULT_MODEL = "gemini-2.0-flash"
+API_URL_TEMPLATE = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "{model}:generateContent?key={api_key}"
+)
 
-    # Try list of models with generateContent in supported_methods
-    # Prefer one directly from your model list; strip leading models/ if present.
-    try:
-        available = client.models.list()
-        for m in available:
-            if not getattr(m, 'name', None):
-                continue
-            nm = m.name
-            if nm.startswith('models/'):
-                nm = nm.replace('models/', '', 1)
-            candidates = [nm]
-            # keep an extra static list if the first model(s) fail.
-            extra = ["gemini-1.0", "gemini-1.5", "gemini-2.0", "gemini-2.0-flash", "gemini-2.5-flash"]
-            for candidate in candidates + extra:
-                try:
-                    client.models.generate_content(model=candidate, contents="Hello")
-                    print(f"Selected model: {candidate}")
-                    return candidate
-                except Exception:
-                    continue
 
-    except Exception as e:
-        print(f"Model list lookup failed: {e}")
+def _extract_text_from_gemini_response(data: dict[str, Any]) -> str:
+    candidates = data.get("candidates") or []
+    if not candidates:
+        return ""
 
-    # Fallback known free-tier/commonly available options if list mode fails completely.
-    fallback_candidates = ["gemini-1.0", "gemini-1.5", "gemini-2.0-flash", "gemini-2.5-flash", "gemini-pro-latest"]
-    for model in fallback_candidates:
+    content = candidates[0].get("content") or {}
+    parts = content.get("parts") or []
+    text_chunks: list[str] = []
+    for part in parts:
+        text = part.get("text")
+        if isinstance(text, str) and text.strip():
+            text_chunks.append(text.strip())
+    return "\n".join(text_chunks)
+
+
+async def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+
+    if sys.platform == "emscripten":
+        # Browser / pygbag path: JS fetch is non-blocking and wasm-safe.
         try:
-            client.models.generate_content(model=model, contents="Hello")
-            print(f"Fallback model works: {model}")
-            return model
-        except Exception:
+            from js import fetch  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(f"Browser fetch unavailable: {exc}") from exc
+
+        options = {
+            "method": "POST",
+            "headers": {"Content-Type": "application/json"},
+            "body": body.decode("utf-8"),
+        }
+        response = await fetch(url, options)
+        ok = bool(getattr(response, "ok", False))
+        text = str(await response.text())
+        if not ok:
+            raise RuntimeError(f"Gemini HTTP error in browser: {text[:200]}")
+        return json.loads(text)
+
+    # Desktop fallback: run blocking urllib in a worker thread.
+    def _sync_request() -> dict[str, Any]:
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Gemini HTTP {exc.code}: {detail[:300]}") from exc
+
+    return await asyncio.to_thread(_sync_request)
+
+
+async def generate_text(prompt: str, model: str = DEFAULT_MODEL) -> str:
+    if not API_KEY:
+        return ""
+
+    url = API_URL_TEMPLATE.format(model=model, api_key=API_KEY)
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                ]
+            }
+        ]
+    }
+
+    try:
+        data = await _post_json(url, payload)
+        return _extract_text_from_gemini_response(data)
+    except Exception as exc:
+        print(f"Gemini request failed: {exc}")
+        return ""
+
+
+async def generate_ocean_cleanup_quiz_async(num_questions: int = 5) -> list[dict[str, Any]]:
+    num_questions = max(1, int(num_questions))
+    prompt = f"""
+Generate {num_questions} multiple-choice questions about ocean trash cleanup.
+Return plain text using this exact format per question:
+Question: <text>
+A) <option>
+B) <option>
+C) <option>
+D) <option>
+Correct: <A/B/C/D>
+---
+Keep questions concise and educational.
+""".strip()
+
+    content = await generate_text(prompt)
+    if not content:
+        return []
+
+    questions: list[dict[str, Any]] = []
+    for section in content.split("---"):
+        if "Question:" not in section or "Correct:" not in section:
             continue
 
-    print("No valid Gemini model found for generateContent.")
-    return None
+        question = ""
+        options: list[str] = []
+        correct = ""
+
+        for raw_line in section.splitlines():
+            line = raw_line.strip()
+            if line.startswith("Question:"):
+                question = line.replace("Question:", "", 1).strip()
+            elif line.startswith(("A)", "B)", "C)", "D)")):
+                options.append(line[2:].strip())
+            elif line.startswith("Correct:"):
+                correct = line.replace("Correct:", "", 1).strip().upper()[:1]
+
+        if question and len(options) == 4 and correct in {"A", "B", "C", "D"}:
+            questions.append(
+                {
+                    "question": question,
+                    "options": options,
+                    "correct": correct,
+                }
+            )
+
+    return questions[:num_questions]
 
 
-def generate_ocean_cleanup_quiz(num_questions=5):
-    """
-    Generate quiz questions about cleaning trash from the ocean using Gemini API.
-
-    Args:
-        num_questions (int): Number of questions to generate
-
-    Returns:
-        list: List of dictionaries containing questions, options, and correct answers
-    """
-    if not client:
-        return []
-
-    model_name = _select_supported_model()
-    if not model_name:
-        print("Error generating quiz: no valid model available")
-        return []
-
-    prompt = f"""
-    Generate {num_questions} multiple-choice questions about cleaning trash from the ocean and marine pollution.
-    Each question should have 4 options (A, B, C, D) with one correct answer.
-
-    Focus on topics like:
-    - Ocean pollution sources
-    - Environmental impact
-    - Cleanup methods and technologies
-    - Marine life protection
-    - Sustainable practices
-
-    Format each question as:
-    Question: [question text]
-    A) [option 1]
-    B) [option 2]
-    C) [option 3]
-    D) [option 4]
-    Correct: [letter]
-
-    Separate questions with ---
-    """
-
+def generate_ocean_cleanup_quiz(num_questions: int = 5) -> list[dict[str, Any]]:
+    """Sync wrapper; in async loops (pygbag) use generate_ocean_cleanup_quiz_async."""
     try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt
-        )
-        content = response.text
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
-        # Parse the response
-        questions = []
-        sections = content.split('---')
-
-        for section in sections:
-            if 'Question:' in section and 'Correct:' in section:
-                lines = section.strip().split('\n')
-                question = ""
-                options = []
-                correct = ""
-
-                for line in lines:
-                    line = line.strip()
-                    if line.startswith('Question:'):
-                        question = line.replace('Question:', '').strip()
-                    elif line.startswith(('A)', 'B)', 'C)', 'D)')):
-                        options.append(line[3:].strip())
-                    elif line.startswith('Correct:'):
-                        correct = line.replace('Correct:', '').strip().upper()
-
-                if question and len(options) == 4 and correct:
-                    questions.append({
-                        'question': question,
-                        'options': options,
-                        'correct': correct
-                    })
-
-        return questions[:num_questions]  # Ensure we don't exceed requested number
-
-    except Exception as e:
-        print(f"Error generating quiz: {e}")
+    if loop and loop.is_running():
         return []
 
-def display_quiz(questions):
-    """
-    Display quiz questions in a simple text format.
-    
-    Args:
-        questions (list): List of question dictionaries
-        
-    Returns:
-        str: Formatted quiz text
-    """
+    return asyncio.run(generate_ocean_cleanup_quiz_async(num_questions=num_questions))
+
+
+def display_quiz(questions: list[dict[str, Any]]) -> str:
     if not questions:
-        return "No quiz questions available. Please check your GEMINI_API_KEY environment variable."
-    
-    quiz_text = "🌊 Ocean Cleanup Quiz 🌊\n\n"
+        return "No quiz questions available."
+
+    lines = ["Ocean Cleanup Quiz", ""]
     for i, q in enumerate(questions, 1):
-        quiz_text += f"{i}. {q['question']}\n"
-        for j, option in enumerate(q['options']):
-            quiz_text += f"   {chr(65+j)}) {option}\n"
-        quiz_text += f"   Correct Answer: {q['correct']}\n\n"
-    
-    return quiz_text
+        lines.append(f"{i}. {q.get('question', '')}")
+        opts = q.get("options", [])
+        for j, option in enumerate(opts):
+            lines.append(f"   {chr(65 + j)}) {option}")
+        lines.append(f"   Correct Answer: {q.get('correct', '?')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+async def generate_ocean_fact_async() -> str:
+    prompt = "Give one short, accurate ocean cleanup fact in under 22 words. No hashtags, no emojis."
+    return await generate_text(prompt)
