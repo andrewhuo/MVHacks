@@ -4,7 +4,7 @@ import asyncio
 
 import pygame
 
-TITLE_TEXT = "Mission Clean Ocean"
+TITLE_TEXT = "Mission: Clean Oceans"
 BG_COLOR = (0, 0, 0)
 TEXT_COLOR = (255, 255, 255)
 PROMPT_COLOR = (215, 215, 215)
@@ -12,12 +12,20 @@ PROMPT_COLOR = (215, 215, 215)
 # TODO: Devika, add the intro paragraphs here:
 INTRO_PARAGRAPHS = [
     """
-In the year 2050, ocean trash formed floating islands the size of cities.
-Your crew is humanity's last line of defense against rising tides and lost coastline.
+This world is dying slowly.
+A death that only means the end of humanity. Though this may be set in stone,
+humanity will not be fazed, not go down without a fight. You have now inherited
+this duty Admiral. Remember, the final battle will not be fought in the stars 
+like our predecessors imagined, but at home, in our very backyard, in the world 
+                        we thought we owned.
+
 """,
     """
-You are in command of Mission Clean Ocean.
-Navigate, collect waste, and upgrade your fleet to restore blue waters worldwide.
+Deep in the seas where no human dares to venture, where the sky and sea merge and
+no horizon is in sight, there lies a blemish spanning over half a million square 
+miles. A dark, rotting, heap whose very presence brings ruin, please Admiral, save
+                                this world.
+
 """,
 ]
 
